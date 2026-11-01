@@ -1,11 +1,15 @@
 # Forge Conversationalist
 
 A hardware-independent voice conversation app for AgenticForge Labs,
-built on LiveKit Agents. Conversation needs no robot or local LLM.
-PR #1 (unmerged) adds realtime voice and selectable LiveKit/OpenRouter
-inference. This stacked PR adds **optional** MCP tools and Hermes
-delegation to the same lightweight LiveKit Agent. Both PRs remain
-unmerged, and real provider/cloud acceptance is outstanding.
+built on LiveKit Agents. **Conversation needs no robot or local LLM.**
+
+PRs #1 and #2 are merged into main: LiveKit/OpenRouter/hybrid speech
+profiles plus optional authenticated MCP and Hermes delegation.
+Real provider/cloud/hardware acceptance is still outstanding.
+
+PR #3 adds device-independent presentation signals and optional browser
+microphone/speaker selection. It does **not** add a Platform subscription,
+robot motion, or a new realtime audio engine.
 
 ## Run the voice application
 
@@ -68,6 +72,26 @@ voice, and this does not attach to your existing TUI/CLI Hermes session.
 
 With no integrations configured, Conversationalist has no extra tools
 and simply responds as a cloud voice assistant.
+
+## Audio devices, expressions and notifications
+
+The web UI lets each connected participant select a supported microphone
+and speaker. LiveKit audio tracks—not Reachy or Puppeteer—own the
+conversation media transport. Browser restrictions can prevent selecting
+some speaker outputs. A future Reachy, room-audio, phone or other endpoint
+can join the same room with its own supported audio adapter.
+
+The page also has **manual preview-only** emotion and notification controls,
+even when no robot or LiveKit room is present. New mail is a soft ding,
+new order a double ding, and an error a warning chime; no Platform event
+feed or user mail/orders are read or simulated as actual records.
+Preview chimes are optional/mutable. The semantic listening/speaking/idle
+states, six small emotions and three notification kinds share one Python
+`forge.presentation.v1` contract, documented in
+[docs/PRESENTATION_SIGNALS.md](docs/PRESENTATION_SIGNALS.md).
+All event content defaults to generic labels with **no automatic speech**.
+Puppeteer may later render states/emotions via authorized native device
+primitives; no audio amplitude wobble or robot driver is introduced here.
 
 ## Tests and safety
 
