@@ -9,14 +9,22 @@ from __future__ import annotations
 
 import os
 
+from .assistant_tools import build_assistant_tools
 from .config import AGENT_NAME, OPENROUTER_API_BASE, CloudProfile, load_profile
+from .integrations import load_integrations
 
 INSTRUCTIONS = (
     "You are Forge Conversationalist, a helpful spoken assistant. "
     "Answer clearly, accurately, and briefly by default. "
     "Use normal conversational speech rather than Markdown or long lists. "
     "Never claim to have external tools, memory, robot control, or private "
-    "business information when those integrations are unavailable."
+    "business information when those integrations are unavailable. "
+    "Use only tools actually available in this room. Never imply an MCP or "
+    "robot action was successful without a returned confirmed outcome. "
+    "Hermes delegation starts an asynchronous run: acceptance is not completion. "
+    "Offer to check the actual run status when the user asks about progress. "
+    "Physical motion and consequential changes require the gateway's own "
+    "permission, validation, and human approval."
 )
 
 
@@ -91,13 +99,17 @@ def main() -> None:
 
     load_dotenv(".env.local")
     profile = load_profile()
+    integrations = load_integrations()
     if profile.requires_openrouter and not os.getenv("OPENROUTER_API_KEY"):
         raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
     server = AgentServer()
 
     class Conversationalist(Agent):
         def __init__(self) -> None:
-            super().__init__(instructions=INSTRUCTIONS)
+            super().__init__(
+                instructions=INSTRUCTIONS,
+                tools=build_assistant_tools(integrations),
+            )
 
     @server.rtc_session(agent_name=AGENT_NAME)
     async def entrypoint(ctx: agents.JobContext) -> None:

@@ -1,17 +1,19 @@
 # Mostly linear PR program
 
-PR 0 (main): minimal README to initialize an otherwise empty repository.
-PR 1 (expanded, OPEN DRAFT): LiveKit room, browser UI, cloud voice worker,
-    Silero VAD, native turn handling, guarded tokens, plus independent
-    OpenRouter / LiveKit Inference STT, LLM, TTS provider selection and
-    hybrid profile. Both providers need attended live audio qualification.
-    OpenRouter scope was incorporated into the existing unmerged PR by
-    direct owner request instead of building a dependent branch from main.
-After PR 1 is qualified and merged:
-PR 3: standard authenticated MCP client and optional ContextForge virtual server.
-PR 4: Hermes/external agent session adapter.
-PR 5: multi-participant microphone, speaker and agent routing.
-PR 6: optional Puppeteer integration once required sibling contracts merge.
+PR 0 (main): repository README initialization.
+PR 1 (OPEN draft, unmerged): standalone LiveKit Cloud/Inferences + OpenRouter
+and hybrid speech pipeline, browser client, gated room tokens, offline tests.
+PR 2 (this stacked OPEN draft, based on PR 1): optional narrow MCP toolset
+plus Hermes Runs API delegation and status tools, tests, source-controlled
+architecture/security examples, credential and failure handling.
+PR 3 (after merge of PRs 1 and 2): Hermes-primary API-owned sessions and,
+separately, authenticated gateway WebSocket integration for existing
+CLI/TUI-owned sessions if needed; progress subscriptions and quiet-break
+completion notification.
+PR 4: participant/mic/speaker/agent routing policy.
+PR 5: Puppeteer integration only after its required dependency PRs merge
+and attended hardware safety validation is performed.
 
-Keep validation source-controlled and incorporate discovered source fixes in
-the same PR. Do not claim mock tests prove remote provider compatibility.
+Strict dependency order: PR 1 -> PR 2 -> later changes.
+Do not merge PR 2 while PR 1 remains unmerged. Avoid a new branch from
+main until dependent work is integrated.
