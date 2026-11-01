@@ -96,6 +96,7 @@ function RoomConversation() {
 export default function Home() {
   const [accessToken, setAccessToken] = useState("");
   const [ttsVoice, setTtsVoice] = useState<(typeof QWEN_TTS_VOICES)[number]["id"]>("");
+  const [vadSensitivity, setVadSensitivity] = useState("standard");
   const [room, setRoom] = useState<RoomGrant | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -108,7 +109,10 @@ export default function Home() {
         method: "POST",
         cache: "no-store",
         headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(ttsVoice ? { ttsVoice } : {}),
+        body: JSON.stringify({
+          ...(ttsVoice ? { ttsVoice } : {}),
+          vadSensitivity,
+        }),
       });
       if (!response.ok) throw new Error(response.status === 401
         ? "Invalid local development access token."
@@ -146,6 +150,13 @@ export default function Home() {
             {QWEN_TTS_VOICES.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
           </select>
           <p className="subtle">Qwen voices apply when OpenRouter Qwen TTS is configured. Configured default keeps the worker’s voice setting.</p>
+          <label htmlFor="vad-sensitivity">Microphone sensitivity</label>
+          <select id="vad-sensitivity" value={vadSensitivity} onChange={(event) => setVadSensitivity(event.target.value)}>
+            <option value="less">Less sensitive (filters quieter sounds)</option>
+            <option value="standard">Standard</option>
+            <option value="more">More sensitive</option>
+          </select>
+          <p className="subtle">Higher sensitivity may pick up quieter speech and background noise.</p>
           <button disabled={!accessToken || loading} onClick={start}>
             {loading ? "Connecting…" : "Start conversation"}
           </button>

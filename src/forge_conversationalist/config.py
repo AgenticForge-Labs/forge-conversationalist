@@ -31,6 +31,14 @@ OPENROUTER_DEFAULT_VOICE = "loongjohn"
 # Keep these aligned with OpenRouter's supported_voices for the configured Qwen TTS model.
 OPENROUTER_TTS_VOICES = frozenset(("loongjohn", "longanhuan_v3.6"))
 
+# Higher Silero activation thresholds require stronger evidence of speech.
+# "standard" leaves the SDK's current default unchanged.
+VAD_SENSITIVITY_THRESHOLDS = {
+    "less": 0.65,
+    "standard": None,
+    "more": 0.35,
+}
+
 _PROVIDERS = frozenset({"livekit", "openrouter"})
 _PRESETS: dict[str, tuple[Provider, Provider, Provider]] = {
     "livekit": ("livekit", "livekit", "livekit"),

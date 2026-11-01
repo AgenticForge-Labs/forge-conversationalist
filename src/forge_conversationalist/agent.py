@@ -17,6 +17,7 @@ from .config import (
     OPENROUTER_API_BASE,
     OPENROUTER_DEFAULT_TTS,
     OPENROUTER_TTS_VOICES,
+    VAD_SENSITIVITY_THRESHOLDS,
     CloudProfile,
     load_profile,
 )
@@ -40,6 +41,7 @@ INSTRUCTIONS = (
 def build_voice_session(
     profile: CloudProfile,
     *,
+    vad_sensitivity: str = "standard",
     sdk: object | None = None,
     openai_plugin: object | None = None,
     openrouter_key: str | None = None,
@@ -58,6 +60,9 @@ def build_voice_session(
         from livekit import agents as sdk
     if profile.requires_openrouter and openai_plugin is None:
         from livekit.plugins import openai as openai_plugin
+
+    if vad_sensitivity not in VAD_SENSITIVITY_THRESHOLDS:
+        raise ValueError("vad_sensitivity must be less, standard, or more")
 
     from livekit.plugins import silero
 
@@ -102,11 +107,16 @@ def build_voice_session(
         # Keep local runs fully on-device with the standard VAD strategy.
         turn_handling["interruption"] = {"mode": "vad"}
 
+    threshold = VAD_SENSITIVITY_THRESHOLDS[vad_sensitivity]
+    vad = silero.VAD.load(
+        **({"activation_threshold": threshold} if threshold is not None else {})
+    )
+
     return sdk.AgentSession(
         stt=stt,
         llm=llm,
         tts=tts,
-        vad=silero.VAD.load(),
+        vad=vad,
         turn_handling=sdk.TurnHandlingOptions(**turn_handling),
     )
 
@@ -129,9 +139,11 @@ async def entrypoint(ctx: object) -> None:
     """
     from livekit.agents import Agent
 
-    profile = _profile_for_job(load_profile(), getattr(ctx.job, "metadata", ""))
+    metadata = getattr(ctx.job, "metadata", "")
+    profile = _profile_for_job(load_profile(), metadata)
+    vad_sensitivity = _requested_vad_sensitivity(metadata)
     integrations = load_integrations()
-    session = build_voice_session(profile)
+    session = build_voice_session(profile, vad_sensitivity=vad_sensitivity)
     agent = Agent(
         instructions=INSTRUCTIONS,
         tools=build_assistant_tools(integrations),
@@ -165,6 +177,22 @@ def _profile_for_job(profile: CloudProfile, metadata: str) -> CloudProfile:
     ):
         return replace(profile, tts_voice=voice)
     return profile
+
+
+def _requested_vad_sensitivity(metadata: str) -> str:
+    """Read only a supported VAD preset from server-authored job metadata."""
+    if not metadata:
+        return "standard"
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return "standard"
+    sensitivity = request.get("vad_sensitivity") if isinstance(request, dict) else None
+    return (
+        sensitivity
+        if isinstance(sensitivity, str) and sensitivity in VAD_SENSITIVITY_THRESHOLDS
+        else "standard"
+    )
 
 
 def main() -> None:

@@ -8,6 +8,7 @@ export const runtime = "nodejs";
 
 const AGENT_NAME = "forge-conversationalist";
 const OPENROUTER_QWEN_VOICES = ["loongjohn", "longanhuan_v3.6"] as const;
+const VAD_SENSITIVITIES = ["less", "standard", "more"] as const;
 
 function authorized(received: string, configured: string): boolean {
   const left = Buffer.from(received, "utf8");
@@ -34,12 +35,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   let requestedVoice: unknown;
+  let requestedVadSensitivity: unknown;
   const rawBody = await request.text();
   if (rawBody) {
     try {
       const body: unknown = JSON.parse(rawBody);
       if (body && typeof body === "object" && "ttsVoice" in body) {
         requestedVoice = body.ttsVoice;
+      }
+      if (body && typeof body === "object" && "vadSensitivity" in body) {
+        requestedVadSensitivity = body.vadSensitivity;
       }
     } catch {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
@@ -50,6 +55,12 @@ export async function POST(request: NextRequest) {
     && !OPENROUTER_QWEN_VOICES.includes(requestedVoice as typeof OPENROUTER_QWEN_VOICES[number])
   ) {
     return NextResponse.json({ error: "Unsupported voice" }, { status: 400 });
+  }
+  if (
+    requestedVadSensitivity !== undefined
+    && !VAD_SENSITIVITIES.includes(requestedVadSensitivity as typeof VAD_SENSITIVITIES[number])
+  ) {
+    return NextResponse.json({ error: "Unsupported VAD sensitivity" }, { status: 400 });
   }
 
   // Never accept arbitrary room/identity/agent values supplied by the browser.
@@ -66,7 +77,12 @@ export async function POST(request: NextRequest) {
   accessToken.roomConfig = new RoomConfiguration({
     agents: [new RoomAgentDispatch({
       agentName: AGENT_NAME,
-      metadata: requestedVoice ? JSON.stringify({ tts_voice: requestedVoice }) : "",
+      metadata: requestedVoice || requestedVadSensitivity
+        ? JSON.stringify({
+            ...(requestedVoice ? { tts_voice: requestedVoice } : {}),
+            ...(requestedVadSensitivity ? { vad_sensitivity: requestedVadSensitivity } : {}),
+          })
+        : "",
     })],
   });
 

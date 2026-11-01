@@ -38,6 +38,10 @@ Set `CONVERSATIONALIST_TURN_DETECTOR_VERSION=v1-mini` in the worker env to run
 the turn detector locally. This loads a roughly 244 MB model and uses VAD-based
 interruption handling; the default cloud setup keeps LiveKit's automatic turn
 detector and adaptive interruption selection.
+The pre-session **Microphone sensitivity** setting adjusts Silero's speech
+activation threshold: **Less sensitive** filters quieter sounds, **Standard**
+uses the existing default, and **More sensitive** detects quieter speech. It
+applies to the next conversation.
 
 Before starting a conversation, the browser offers the configured TTS voice or
 either supported voice for OpenRouter's Qwen TTS model. The server validates a
