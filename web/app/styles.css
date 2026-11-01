@@ -25,3 +25,21 @@ h2 { text-transform: capitalize; margin: 0; font-size: 21px; }
 .message-form { display: grid; gap: 8px; }
 .send-row { display: flex; gap: 8px; }
 @media (max-width: 540px) { .shell { margin: 0 auto; padding: 18px; } .onboard, .conversation { padding: 18px; } .room-meta { flex-direction: column; align-items: stretch; } }
+
+.device-chooser { border: 1px solid #425369; padding: 12px; border-radius: 12px; display: grid; gap: 10px; }
+.device-chooser legend { color: #b6cce4; font-weight: 700; }
+.device-chooser label { display: grid; gap: 6px; }
+.device-chooser select, .presentation-preview select { width: 100%; background: #101c2a; border: 1px solid #425369; color: #fff; border-radius: 10px; padding: 9px; font: inherit; }
+.device-chooser .subtle { font-size: 12px; margin: 0; }
+.presence { color: #b8d7ea; background: #112737; border-radius: 8px; padding: 10px; text-transform: capitalize; }
+.presentation-preview { margin-top: 20px; padding: 22px; background: #15202d; border: 1px solid #2c3a4a; border-radius: 18px; }
+.presentation-preview h2 { text-transform: none; font-size: 20px; }
+.preview-grid { display: grid; grid-template-columns: 1fr 1.5fr; gap: 16px; }
+.preview-grid > div { display: grid; gap: 10px; align-content: start; }
+.preview-grid label { color: #c5d4e2; font-size: 13px; }
+.preview-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.preview-actions button { font-size: 12px; padding: 9px 12px; }
+.preview-output { color: #b8d7ea; background: #101c2a; border: 1px solid #2b3d50; border-radius: 8px; padding: 12px; }
+.mute-choice { display: flex; align-items: center; gap: 9px; }
+.mute-choice input { width: auto; }
+@media (max-width: 580px) { .preview-grid { grid-template-columns: 1fr; } }
