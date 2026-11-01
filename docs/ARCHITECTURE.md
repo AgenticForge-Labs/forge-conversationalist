@@ -6,8 +6,10 @@ detection. The worker selects independent LiveKit/OpenRouter/hybrid STT,
 LLM and TTS models and provides a lightweight voice agent. Hermes is
 an opt-in API-owned task-delegation backend; it owns all actual agent
 runs and memory. Native LiveKit MCPToolset can connect to an authorized
-MCP server with exact tool grants. Platform owns all company facts and
-business events; Puppeteer owns validated physical performance; SDKs own
+MCP server with exact tool grants. Platform owns its internal records and the **future cross-system communication
+bus** (subscriber authentication, filtering, replay and notification delivery);
+producer systems retain their original domain facts. Puppeteer owns
+validated physical performance; SDKs own
 hardware motion and safety. Cloud and physical integration validation
 remains outstanding; nothing here asserts deployed production readiness.
 
@@ -45,8 +47,8 @@ Secrets never enter browser code. No status cue or LLM prompt can
 authorize an action against a company account or physical device.
 
 ## Deferred
-A trusted Platform/Business Engine event subscription, authenticated
-event fanout, room-origin filtering, alert preferences, privacy policy,
+A Platform-owned authenticated communication feed, scoped event fanout,
+room-origin filtering, alert preferences, privacy policy,
 real display/light/robot renderers, multi-participant microphone/speaker
 arbitration and live hardware tests. No amplitude-reactive robot motion
 is desired or planned.

@@ -54,9 +54,9 @@ private content aloud. Chimes are short and user-mutable; they do not
 replace an audit log or imply that a business process succeeded.
 
 `PresentationRouter` suppresses duplicate IDs with a *bounded
-ephemeral* cache, not a durable delivery guarantee. Future producer
-connections need server-side auth, replay/delivery policy and user-level
-device/subscription preferences in the owning systems. A LiveKit room
+ephemeral* cache, not a durable delivery guarantee. Future Platform-owned subscription delivery needs authenticated sources,
+subscriber grants, replay/delivery policy and user/device preferences.
+The owning source system still retains business and hardware truth. A LiveKit room
 topic is **not an authenticated subscription bus**. Browser clients must
 accept official cues only from a verified/authorized publisher; a user
 posting the same JSON to a room must not be treated as a new company fact.
@@ -71,8 +71,8 @@ labeled browser-only previews** for emotions and three chimes. Preview
 events are not actual orders/mail/failures and are not transmitted to the
 gateway or agent. A browser may lack permission to switch speaker output.
 
-**Future:** trusted Platform/Business Engine subscriptions, authorization,
-event filtering and multi-device delivery, verified signal ingestion into
+**Future:** a trusted **Platform communications bus** with subscriber authorization,
+event filtering, privacy and multi-device delivery, verified signal ingress into
 the LiveKit room, actual device-specific light/display/Puppeteer renderers,
 and robust selected-speaker arbitration for shared microphones.
 
