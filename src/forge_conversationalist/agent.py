@@ -36,7 +36,11 @@ INSTRUCTIONS = (
     "Hermes delegation starts an asynchronous run: acceptance is not completion. "
     "Offer to check the actual run status when the user asks about progress. "
     "Physical motion and consequential changes require the gateway's own "
-    "permission, validation, and human approval."
+    "permission, validation, and human approval. When a restricted Reachy move "
+    "tool is available, call it only after the user explicitly asks for a "
+    "movement or expression. Never move Reachy automatically while listening, "
+    "speaking, idle, greeting, or acknowledging. Use only the exact approved "
+    "moves enforced by the gateway."
 )
 
 
@@ -182,17 +186,26 @@ async def entrypoint(ctx: object) -> None:
         profile = _profile_for_job(profile, metadata)
     vad_sensitivity = _requested_vad_sensitivity(metadata)
     integrations = load_integrations()
+    authorized_identity = _authorized_identity(metadata)
+    room_name = getattr(ctx.room, "name", None)
+    agent_integrations = integrations
+    if integrations.puppeteer_stdio is not None and (
+        not authorized_identity or not isinstance(room_name, str) or not room_name
+    ):
+        # Do not expose action tools if the signed room dispatch lacks stable IDs.
+        agent_integrations = replace(integrations, puppeteer_stdio=None)
     session = build_voice_session(
         profile,
         vad_sensitivity=vad_sensitivity,
         tts_sample_rate=selected_model["sampleRate"] if selected_model else 24000,
     )
     agent = Agent(
-        instructions=INSTRUCTIONS,
-        tools=build_assistant_tools(integrations),
+        instructions=_room_instructions(
+            agent_integrations, caller_id=authorized_identity, session_id=room_name
+        ),
+        tools=build_assistant_tools(agent_integrations),
     )
     await session.start(room=ctx.room, agent=agent)
-    authorized_identity = _authorized_identity(metadata)
     if authorized_identity:
         _register_voice_rpc(
             ctx.room.local_participant,
@@ -204,6 +217,34 @@ async def entrypoint(ctx: object) -> None:
     # system instructions fails on providers that require a user query and
     # creates an unnecessary model request.
     await session.say("Hello! I'm here to help.")
+
+
+def _room_instructions(
+    integrations: object,
+    *,
+    caller_id: str | None,
+    session_id: str | None,
+) -> str:
+    """Add only the operator-pinned Reachy move IDs to this room's guidance."""
+    config = getattr(integrations, "puppeteer_stdio", None)
+    if config is None:
+        return INSTRUCTIONS
+    pins = ", ".join(f"{asset_id} ({revision})" for asset_id, revision in config.approved_moves)
+    available = set(config.allowed_tools)
+    guidance = (
+        " The Puppeteer Reachy tool is available for explicit user-requested "
+        "expressions or movements only. Call list_assets to retrieve the "
+        "gateway-filtered approved moves. Approved move pins are: " + pins + ". "
+        "Call play_move only with one exact listed asset_id and revision. "
+        "Never use a move to greet, acknowledge, listen, speak, or idle. "
+        f"For play_move, use caller_id={caller_id} and session_id={session_id}. "
+        "Generate one unique action_id per requested move. Do not retry an "
+        "ambiguous or timed-out move; if action_lookup is available, check "
+        "that same action_id before saying whether it completed."
+    )
+    if "device_stop" in available:
+        guidance += " Call device_stop only when the user explicitly asks to stop Reachy."
+    return INSTRUCTIONS + guidance
 
 
 def _authorized_identity(metadata: str) -> str | None:
