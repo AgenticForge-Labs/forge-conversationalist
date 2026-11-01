@@ -91,20 +91,8 @@ def build_voice_session(
             base_url=OPENROUTER_API_BASE,
         )
     )
-    tts_kwargs = {
-        "model": profile.tts_model,
-        "voice": profile.tts_voice,
-        "base_url": OPENROUTER_API_BASE,
-        "api_key": api_key,
-        "response_format": profile.tts_response_format,
-    }
-    if tts_sample_rate != 24000:
-        tts_kwargs["sample_rate"] = tts_sample_rate
-    tts = (
-        sdk.inference.TTS(model=profile.tts_model, voice=profile.tts_voice)
-        if profile.tts_provider == "livekit"
-        else openai_plugin.TTS(**tts_kwargs)
-    )
+    tts = _build_tts(profile, api_key=api_key, openai_plugin=openai_plugin,
+                     tts_sample_rate=tts_sample_rate, sdk=sdk)
     turn_handling = {
         "turn_detection": _build_turn_detector(sdk),
     }
@@ -125,6 +113,36 @@ def build_voice_session(
         vad=vad,
         turn_handling=sdk.TurnHandlingOptions(**turn_handling),
     )
+
+
+def _build_tts(
+    profile: CloudProfile,
+    *,
+    api_key: str | None = None,
+    openai_plugin: object | None = None,
+    tts_sample_rate: int = 24000,
+    sdk: object | None = None,
+) -> object:
+    """Build the selected provider TTS for startup or a live voice swap."""
+    if profile.tts_provider == "livekit":
+        if sdk is None:
+            from livekit import agents as sdk
+        return sdk.inference.TTS(model=profile.tts_model, voice=profile.tts_voice)
+    key = api_key if api_key is not None else os.getenv("OPENROUTER_API_KEY")
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
+    if openai_plugin is None:
+        from livekit.plugins import openai as openai_plugin
+    kwargs = {
+        "model": profile.tts_model,
+        "voice": profile.tts_voice,
+        "base_url": OPENROUTER_API_BASE,
+        "api_key": key,
+        "response_format": profile.tts_response_format,
+    }
+    if tts_sample_rate != 24000:
+        kwargs["sample_rate"] = tts_sample_rate
+    return openai_plugin.TTS(**kwargs)
 
 
 def _build_turn_detector(sdk: object) -> object:
@@ -174,10 +192,76 @@ async def entrypoint(ctx: object) -> None:
         tools=build_assistant_tools(integrations),
     )
     await session.start(room=ctx.room, agent=agent)
+    authorized_identity = _authorized_identity(metadata)
+    if authorized_identity:
+        _register_voice_rpc(
+            ctx.room.local_participant,
+            caller_identity=authorized_identity,
+            agent=agent,
+            base_profile=load_profile(),
+        )
     # A fixed greeting needs TTS only. Asking the LLM to generate it with only
     # system instructions fails on providers that require a user query and
     # creates an unnecessary model request.
     await session.say("Hello! I'm here to help.")
+
+
+def _authorized_identity(metadata: str) -> str | None:
+    if not metadata:
+        return None
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    identity = request.get("authorized_identity") if isinstance(request, dict) else None
+    return identity if isinstance(identity, str) and identity else None
+
+
+def _register_voice_rpc(
+    local_participant: object,
+    *,
+    caller_identity: str,
+    agent: object,
+    base_profile: CloudProfile,
+) -> None:
+    """Expose voice switching only to the user identity signed into this room."""
+    from livekit import rtc
+
+    async def change_voice(data: object) -> str:
+        if getattr(data, "caller_identity", None) != caller_identity:
+            raise rtc.RpcError(
+                code=rtc.RpcError.ErrorCode.APPLICATION_ERROR,
+                message="Only the authorized room participant can change speech settings",
+            )
+        try:
+            requested = json.loads(data.payload)
+        except (TypeError, json.JSONDecodeError):
+            raise rtc.RpcError(code=rtc.RpcError.ErrorCode.APPLICATION_ERROR, message="Invalid settings")
+        if not isinstance(requested, dict):
+            raise rtc.RpcError(code=rtc.RpcError.ErrorCode.APPLICATION_ERROR, message="Invalid settings")
+
+        model_id = requested.get("tts_model")
+        voice = requested.get("tts_voice")
+        sample_rate = 24000
+        if model_id is None and voice is None:
+            profile = base_profile
+        else:
+            selected = selected_speech_model(model_id, voice)
+            if selected is None:
+                raise rtc.RpcError(code=rtc.RpcError.ErrorCode.APPLICATION_ERROR, message="Unsupported speech model or voice")
+            profile = replace(
+                base_profile,
+                tts_provider="openrouter",
+                tts_model=selected["id"],
+                tts_voice=voice,
+                tts_response_format=selected["responseFormat"],
+            )
+            sample_rate = selected["sampleRate"]
+        tts = _build_tts(profile, tts_sample_rate=sample_rate)
+        agent.update_options(tts=tts)
+        return json.dumps({"model": profile.tts_model, "voice": profile.tts_voice})
+
+    local_participant.register_rpc_method("forge.change_speech", change_voice)
 
 
 def _requested_speech_model(metadata: str) -> tuple[Any, Any] | None:

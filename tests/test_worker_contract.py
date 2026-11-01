@@ -9,6 +9,7 @@ import pytest
 
 from forge_conversationalist.agent import (
     _profile_for_job,
+    _register_voice_rpc,
     _requested_qwen_voice,
     _requested_vad_sensitivity,
     build_voice_session,
@@ -71,6 +72,59 @@ def test_job_vad_sensitivity_accepts_only_named_presets() -> None:
     assert _requested_vad_sensitivity('{"vad_sensitivity":[]}') == "standard"
     assert _requested_vad_sensitivity('{"vad_sensitivity":"unknown"}') == "standard"
     assert _requested_vad_sensitivity("not json") == "standard"
+
+
+def test_live_voice_rpc_updates_tts_for_only_authorized_participant() -> None:
+    handlers: dict[str, object] = {}
+    local_participant = SimpleNamespace(
+        register_rpc_method=lambda name, handler: handlers.__setitem__(name, handler)
+    )
+    agent = SimpleNamespace(update_options=Mock())
+    model = {
+        "id": "hexgrad/kokoro-82m",
+        "responseFormat": "mp3",
+        "sampleRate": 24000,
+    }
+    with (
+        patch("forge_conversationalist.agent.selected_speech_model", return_value=model),
+        patch("forge_conversationalist.agent._build_tts", return_value="new-tts") as build_tts,
+    ):
+        _register_voice_rpc(
+            local_participant,
+            caller_identity="person-authorized",
+            agent=agent,
+            base_profile=load_profile({"CONVERSATIONALIST_PRESET": "openrouter"}),
+        )
+        handler = handlers["forge.change_speech"]
+        response = asyncio.run(handler(SimpleNamespace(
+            caller_identity="person-authorized",
+            payload='{"tts_model":"hexgrad/kokoro-82m","tts_voice":"af_heart"}',
+        )))
+
+    assert response == '{"model": "hexgrad/kokoro-82m", "voice": "af_heart"}'
+    build_tts.assert_called_once()
+    agent.update_options.assert_called_once_with(tts="new-tts")
+
+
+def test_live_voice_rpc_rejects_other_room_participants() -> None:
+    handlers: dict[str, object] = {}
+    local_participant = SimpleNamespace(
+        register_rpc_method=lambda name, handler: handlers.__setitem__(name, handler)
+    )
+    with patch("forge_conversationalist.agent._build_tts") as build_tts:
+        _register_voice_rpc(
+            local_participant,
+            caller_identity="person-authorized",
+            agent=SimpleNamespace(update_options=Mock()),
+            base_profile=CloudProfile(),
+        )
+        handler = handlers["forge.change_speech"]
+        with pytest.raises(Exception, match="Only the authorized"):
+            asyncio.run(handler(SimpleNamespace(
+                caller_identity="person-other",
+                payload='{"tts_model":"hexgrad/kokoro-82m","tts_voice":"af_heart"}',
+            )))
+    build_tts.assert_not_called()
 
 
 def test_session_uses_profile_and_livekit_owned_vad_turns() -> None:

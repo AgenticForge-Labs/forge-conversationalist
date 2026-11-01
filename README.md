@@ -43,17 +43,19 @@ activation threshold: **Less sensitive** filters quieter sounds, **Standard**
 uses the existing default, and **More sensitive** detects quieter speech. It
 applies to the next conversation.
 
-Before starting a conversation, the browser offers the configured TTS profile
-and OpenRouter speech models listed at $20 or less per million input characters
-or bytes. Prices and voice IDs come from OpenRouter's public speech model
-catalog, refreshed every five minutes. Models with no published voice list are
-shown but cannot be selected. Models with a documented output format use it;
-other models request MP3 and are marked as unverified in this LiveKit adapter.
-Token-priced and duration-priced models are excluded because they cannot be
-honestly compared using a per-character price. A model/voice selection is
-validated by the session API and again in the worker before being used. The
-OpenRouter key remains in the worker environment; the browser only receives
-catalog metadata and the existing LiveKit session token.
+Enter the development access token once. The server saves it in a 30-day
+HttpOnly, same-site cookie and automatically connects on later visits. The
+cookie is scoped to the local session API, checked with same-origin protection,
+and is never readable by page JavaScript. Clearing site cookies asks for the
+token again.
+
+During a conversation, use the **Speech model and voice** controls to switch
+OpenRouter TTS models and voices without leaving the room. The worker applies
+the change through an authenticated LiveKit RPC from the room's authorized
+participant. Prices and voice IDs come from OpenRouter's public catalog and
+refresh every five minutes; model choices are checked by both the API and the
+worker. The browser receives only catalog metadata and the LiveKit session
+token. The OpenRouter key remains in the worker environment.
 
 ## Optional lightweight agent integrations
 
