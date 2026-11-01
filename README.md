@@ -43,11 +43,17 @@ activation threshold: **Less sensitive** filters quieter sounds, **Standard**
 uses the existing default, and **More sensitive** detects quieter speech. It
 applies to the next conversation.
 
-Before starting a conversation, the browser offers the configured TTS voice or
-either supported voice for OpenRouter's Qwen TTS model. The server validates a
-voice choice and passes it to the worker as room dispatch metadata. It only
-overrides the voice when that Qwen TTS model is configured; other TTS profiles
-keep their configured voice.
+Before starting a conversation, the browser offers the configured TTS profile
+and OpenRouter speech models listed at $20 or less per million input characters
+or bytes. Prices and voice IDs come from OpenRouter's public speech model
+catalog, refreshed every five minutes. Models with no published voice list are
+shown but cannot be selected. Models with a documented output format use it;
+other models request MP3 and are marked as unverified in this LiveKit adapter.
+Token-priced and duration-priced models are excluded because they cannot be
+honestly compared using a per-character price. A model/voice selection is
+validated by the session API and again in the worker before being used. The
+OpenRouter key remains in the worker environment; the browser only receives
+catalog metadata and the existing LiveKit session token.
 
 ## Optional lightweight agent integrations
 

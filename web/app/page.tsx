@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PresentationPreview } from "./presentation-preview";
 import {
   BarVisualizer,
@@ -12,13 +12,9 @@ import {
   VoiceAssistantControlBar,
   useRoomContext,
 } from "@livekit/components-react";
+import type { OpenRouterTtsModel } from "@/lib/openrouter-tts";
 
 type RoomGrant = { token: string; serverUrl: string; roomName: string };
-const QWEN_TTS_VOICES = [
-  { id: "", label: "Configured default" },
-  { id: "loongjohn", label: "Loong John" },
-  { id: "longanhuan_v3.6", label: "Long An Huan" },
-] as const;
 
 function RoomConversation() {
   const { state, audioTrack } = useVoiceAssistant();
@@ -95,11 +91,28 @@ function RoomConversation() {
 
 export default function Home() {
   const [accessToken, setAccessToken] = useState("");
-  const [ttsVoice, setTtsVoice] = useState<(typeof QWEN_TTS_VOICES)[number]["id"]>("");
+  const [ttsModels, setTtsModels] = useState<OpenRouterTtsModel[]>([]);
+  const [ttsCatalogError, setTtsCatalogError] = useState("");
+  const [ttsModel, setTtsModel] = useState("");
+  const [ttsVoice, setTtsVoice] = useState("");
   const [vadSensitivity, setVadSensitivity] = useState("standard");
   const [room, setRoom] = useState<RoomGrant | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/tts-models", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("catalog unavailable");
+        return response.json() as Promise<{ models: OpenRouterTtsModel[] }>;
+      })
+      .then(({ models }) => { if (!cancelled) setTtsModels(models); })
+      .catch(() => { if (!cancelled) setTtsCatalogError("Could not load OpenRouter speech models. The configured voice remains available."); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const selectedTtsModel = ttsModels.find((model) => model.id === ttsModel);
 
   async function start() {
     setError("");
@@ -110,7 +123,7 @@ export default function Home() {
         cache: "no-store",
         headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...(ttsVoice ? { ttsVoice } : {}),
+          ...(ttsModel ? { ttsModel, ttsVoice } : {}),
           vadSensitivity,
         }),
       });
@@ -145,19 +158,35 @@ export default function Home() {
             onChange={(e) => setAccessToken(e.target.value)}
             placeholder="Configured in web/.env.local"
           />
-          <label htmlFor="tts-voice">Voice</label>
-          <select id="tts-voice" value={ttsVoice} onChange={(event) => setTtsVoice(event.target.value as typeof ttsVoice)}>
-            {QWEN_TTS_VOICES.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
+          <label htmlFor="tts-model">Speech model (OpenRouter, up to $20 per million characters/bytes)</label>
+          <select id="tts-model" value={ttsModel} onChange={(event) => {
+            const nextModel = ttsModels.find((model) => model.id === event.target.value);
+            setTtsModel(event.target.value);
+            setTtsVoice(nextModel?.voices[0] ?? "");
+          }}>
+            <option value="">Configured default</option>
+            {ttsModels.map((model) => (
+              <option key={model.id} value={model.id} disabled={!model.selectable}>
+                {model.name} — ${model.pricePerMillion.toLocaleString(undefined, { maximumFractionDigits: 4 })} / million {model.priceUnit}{model.selectable ? "" : " (no published voices; unavailable)"}
+              </option>
+            ))}
           </select>
-          <p className="subtle">Qwen voices apply when OpenRouter Qwen TTS is configured. Configured default keeps the worker’s voice setting.</p>
+          {ttsCatalogError && <p className="subtle" role="status">{ttsCatalogError}</p>}
+          <label htmlFor="tts-voice">Supported voice</label>
+          <select id="tts-voice" value={ttsVoice} disabled={!selectedTtsModel?.selectable} onChange={(event) => setTtsVoice(event.target.value)}>
+            {selectedTtsModel?.selectable
+              ? selectedTtsModel.voices.map((voice) => <option key={voice} value={voice}>{voice}</option>)
+              : <option value="">Choose a selectable speech model</option>}
+          </select>
+          {selectedTtsModel && <p className="subtle">{selectedTtsModel.formatVerified ? `Output format ${selectedTtsModel.responseFormat} documented; this app path is not yet live-tested for this model.` : "Output format compatibility is unverified; MP3 is requested."}</p>}
           <label htmlFor="vad-sensitivity">Microphone sensitivity</label>
           <select id="vad-sensitivity" value={vadSensitivity} onChange={(event) => setVadSensitivity(event.target.value)}>
-            <option value="less">Less sensitive (filters quieter sounds)</option>
+            <option value="less">Less sensitive (fewer noise triggers)</option>
             <option value="standard">Standard</option>
             <option value="more">More sensitive</option>
           </select>
-          <p className="subtle">Higher sensitivity may pick up quieter speech and background noise.</p>
-          <button disabled={!accessToken || loading} onClick={start}>
+          <p className="subtle">Less sensitive requires stronger speech cues and may miss quiet speech; more sensitive can react to background noise.</p>
+          <button disabled={!accessToken || loading || Boolean(ttsModel && !ttsVoice)} onClick={start}>
             {loading ? "Connecting…" : "Start conversation"}
           </button>
           {error ? <p className="error" role="alert">{error}</p> : null}

@@ -3,11 +3,11 @@ import { timingSafeEqual } from "node:crypto";
 import { randomUUID } from "node:crypto";
 import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
 import { AccessToken } from "livekit-server-sdk";
+import { fetchAffordableSpeechModels } from "@/lib/openrouter-tts";
 
 export const runtime = "nodejs";
 
 const AGENT_NAME = "forge-conversationalist";
-const OPENROUTER_QWEN_VOICES = ["loongjohn", "longanhuan_v3.6"] as const;
 const VAD_SENSITIVITIES = ["less", "standard", "more"] as const;
 
 function authorized(received: string, configured: string): boolean {
@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   let requestedVoice: unknown;
+  let requestedModel: unknown;
   let requestedVadSensitivity: unknown;
   const rawBody = await request.text();
   if (rawBody) {
@@ -43,6 +44,9 @@ export async function POST(request: NextRequest) {
       if (body && typeof body === "object" && "ttsVoice" in body) {
         requestedVoice = body.ttsVoice;
       }
+      if (body && typeof body === "object" && "ttsModel" in body) {
+        requestedModel = body.ttsModel;
+      }
       if (body && typeof body === "object" && "vadSensitivity" in body) {
         requestedVadSensitivity = body.vadSensitivity;
       }
@@ -50,11 +54,29 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
     }
   }
-  if (
-    requestedVoice !== undefined
-    && !OPENROUTER_QWEN_VOICES.includes(requestedVoice as typeof OPENROUTER_QWEN_VOICES[number])
-  ) {
-    return NextResponse.json({ error: "Unsupported voice" }, { status: 400 });
+  let requestedSpeechModel: Awaited<ReturnType<typeof fetchAffordableSpeechModels>>[number] | undefined;
+  if (requestedModel !== undefined) {
+    if (typeof requestedModel !== "string") {
+      return NextResponse.json({ error: "Unsupported speech model" }, { status: 400 });
+    }
+    let catalog;
+    try {
+      catalog = await fetchAffordableSpeechModels();
+    } catch {
+      return NextResponse.json({ error: "Speech model catalog is unavailable" }, { status: 503 });
+    }
+    requestedSpeechModel = catalog.find((model) => model.id === requestedModel);
+    if (!requestedSpeechModel?.selectable) {
+      return NextResponse.json({ error: "Speech model has no published supported voices" }, { status: 400 });
+    }
+    if (typeof requestedVoice !== "string" || !requestedSpeechModel.voices.includes(requestedVoice)) {
+      return NextResponse.json({ error: "Voice is not supported by the selected speech model" }, { status: 400 });
+    }
+  } else if (requestedVoice !== undefined) {
+    const legacyVoices = ["loongjohn", "longanhuan_v3.6"];
+    if (typeof requestedVoice !== "string" || !legacyVoices.includes(requestedVoice)) {
+      return NextResponse.json({ error: "Unsupported voice" }, { status: 400 });
+    }
   }
   if (
     requestedVadSensitivity !== undefined
@@ -77,8 +99,9 @@ export async function POST(request: NextRequest) {
   accessToken.roomConfig = new RoomConfiguration({
     agents: [new RoomAgentDispatch({
       agentName: AGENT_NAME,
-      metadata: requestedVoice || requestedVadSensitivity
+      metadata: requestedSpeechModel || requestedVoice || requestedVadSensitivity
         ? JSON.stringify({
+            ...(requestedSpeechModel ? { tts_model: requestedSpeechModel.id } : {}),
             ...(requestedVoice ? { tts_voice: requestedVoice } : {}),
             ...(requestedVadSensitivity ? { vad_sensitivity: requestedVadSensitivity } : {}),
           })

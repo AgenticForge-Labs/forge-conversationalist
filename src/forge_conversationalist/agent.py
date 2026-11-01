@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
+from typing import Any
 
 from .assistant_tools import build_assistant_tools
 from .config import (
@@ -22,6 +23,7 @@ from .config import (
     load_profile,
 )
 from .integrations import load_integrations
+from .speech_catalog import selected_speech_model
 
 INSTRUCTIONS = (
     "You are Forge Conversationalist, a helpful spoken assistant. "
@@ -42,6 +44,7 @@ def build_voice_session(
     profile: CloudProfile,
     *,
     vad_sensitivity: str = "standard",
+    tts_sample_rate: int = 24000,
     sdk: object | None = None,
     openai_plugin: object | None = None,
     openrouter_key: str | None = None,
@@ -88,16 +91,19 @@ def build_voice_session(
             base_url=OPENROUTER_API_BASE,
         )
     )
+    tts_kwargs = {
+        "model": profile.tts_model,
+        "voice": profile.tts_voice,
+        "base_url": OPENROUTER_API_BASE,
+        "api_key": api_key,
+        "response_format": profile.tts_response_format,
+    }
+    if tts_sample_rate != 24000:
+        tts_kwargs["sample_rate"] = tts_sample_rate
     tts = (
         sdk.inference.TTS(model=profile.tts_model, voice=profile.tts_voice)
         if profile.tts_provider == "livekit"
-        else openai_plugin.TTS(
-            model=profile.tts_model,
-            voice=profile.tts_voice,
-            base_url=OPENROUTER_API_BASE,
-            api_key=api_key,
-            response_format=profile.tts_response_format,
-        )
+        else openai_plugin.TTS(**tts_kwargs)
     )
     turn_handling = {
         "turn_detection": _build_turn_detector(sdk),
@@ -140,10 +146,29 @@ async def entrypoint(ctx: object) -> None:
     from livekit.agents import Agent
 
     metadata = getattr(ctx.job, "metadata", "")
-    profile = _profile_for_job(load_profile(), metadata)
+    profile = load_profile()
+    requested_model = _requested_speech_model(metadata)
+    selected_model = None
+    if requested_model is not None:
+        selected_model = selected_speech_model(requested_model[0], requested_model[1])
+        if selected_model is None:
+            raise ValueError("Requested speech model or voice is not in the current OpenRouter catalog")
+        profile = replace(
+            profile,
+            tts_provider="openrouter",
+            tts_model=selected_model["id"],
+            tts_voice=requested_model[1],
+            tts_response_format=selected_model["responseFormat"],
+        )
+    else:
+        profile = _profile_for_job(profile, metadata)
     vad_sensitivity = _requested_vad_sensitivity(metadata)
     integrations = load_integrations()
-    session = build_voice_session(profile, vad_sensitivity=vad_sensitivity)
+    session = build_voice_session(
+        profile,
+        vad_sensitivity=vad_sensitivity,
+        tts_sample_rate=selected_model["sampleRate"] if selected_model else 24000,
+    )
     agent = Agent(
         instructions=INSTRUCTIONS,
         tools=build_assistant_tools(integrations),
@@ -153,6 +178,19 @@ async def entrypoint(ctx: object) -> None:
     # system instructions fails on providers that require a user query and
     # creates an unnecessary model request.
     await session.say("Hello! I'm here to help.")
+
+
+def _requested_speech_model(metadata: str) -> tuple[Any, Any] | None:
+    """Read the per-session TTS choice; full allowlist validation is separate."""
+    if not metadata:
+        return None
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(request, dict) or "tts_model" not in request:
+        return None
+    return request.get("tts_model"), request.get("tts_voice")
 
 
 def _requested_qwen_voice(metadata: str) -> str | None:
