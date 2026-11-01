@@ -85,6 +85,10 @@ The page also has **manual preview-only** emotion and notification controls,
 even when no robot or LiveKit room is present. New mail is a soft ding,
 new order a double ding, and an error a warning chime; no Platform event
 feed or user mail/orders are read or simulated as actual records.
+Cross-system event subscriptions, publisher/subscriber authorization, replay,
+notification fanout and delivery policy belong to **AgenticForge Platform**.
+Conversationalist only translates authorized events into cues. LiveKit room
+data messages are not a general-purpose bus.
 Preview chimes are optional/mutable. The semantic listening/speaking/idle
 states, six small emotions and three notification kinds share one Python
 `forge.presentation.v1` contract, documented in
