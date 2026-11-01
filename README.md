@@ -1,24 +1,34 @@
 # Forge Conversationalist
 
-A hardware-independent voice conversation app for AgenticForge Labs.
+A hardware-independent LiveKit voice conversation app for AgenticForge Labs.
+**No robot, local LLM, Hermes, MCP gateway or Platform server is required.**
 
-**PR 1 state:** a standalone LiveKit Agents voice worker and a minimal
-Next.js web client. No robot, MCP server, Hermes instance, local LLM, or
-OpenRouter account is needed. Silero VAD runs locally on CPU; STT, LLM,
-TTS and the speech turn detector use LiveKit Cloud Inference.
+**Open draft PR 1, not production:** includes a LiveKit room/voice worker and
+browser UI plus selectable OpenRouter, LiveKit Inference, and hybrid profiles.
+Real cloud audio compatibility and interruption latency are **not yet
+attended-tested**. Credentials are needed only on the trusted worker.
 
-**This branch is not production-deployed.** Live microphone/cloud audio,
-pricing, and browser compatibility still need an authenticated local
-acceptance test before merge.
+## Quick start
 
-## Quick start (LiveKit Cloud)
+1. Create a LiveKit Cloud project. Copy `.env.example` to `.env.local`
+   and set `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`,
+   and a long random `CONVERSATIONALIST_ACCESS_TOKEN`.
+2. Select a profile in the Python worker's `.env.local`:
 
-1. Create a LiveKit Cloud project and obtain its `LIVEKIT_URL`,
-   `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET`.
-2. Copy `.env.example` to `.env.local` at the repository root. Set
-   LiveKit credentials and a long random `CONVERSATIONALIST_ACCESS_TOKEN`.
-   **Never commit `.env.local`.**
-3. Install the Python worker in an isolated environment:
+   | Profile | STT | LLM | TTS |
+   | --- | --- | --- | --- |
+   | `livekit` | LiveKit Inference | LiveKit Inference | LiveKit Inference |
+   | `openrouter` | OpenRouter | OpenRouter | OpenRouter |
+   | `hybrid` | LiveKit Inference | OpenRouter | LiveKit Inference |
+
+   `CONVERSATIONALIST_PRESET=openrouter` requires
+   `OPENROUTER_API_KEY` in the **Python worker only**. By default, it
+   selects OpenRouter Parakeet TDT (buffered transcription),
+   `qwen/qwen3.5-9b` and Qwen TTS Flash with voice `loongjohn`.
+   This is **not** Reachy's Aiden voice. See `.env.example` for
+   independent `CONVERSATIONALIST_*_PROVIDER`, model and voice fields.
+
+3. Install and start the standalone worker:
 
    ```bash
    uv venv --python 3.12
@@ -27,27 +37,26 @@ acceptance test before merge.
    .venv/bin/python -m forge_conversationalist.agent dev
    ```
 
-4. Configure the browser token endpoint separately:
+4. Copy `web/.env.example` to `web/.env.local`. Supply only LiveKit
+   connection credentials and the **development access token**; **do not
+   put OpenRouter keys in the web env file**.
 
    ```bash
-   cp web/.env.example web/.env.local
-   # Copy the same LiveKit credentials and access token into web/.env.local.
    cd web
    npm install
+   npm run check && npm run build
    npm run dev
    ```
 
-5. Visit [http://localhost:3000](http://localhost:3000), enter the
-   `CONVERSATIONALIST_ACCESS_TOKEN` configured in the local web server,
-   and click **Start conversation**. Allow microphone access. LiveKit
-   explicitly dispatches one `forge-conversationalist` agent to a unique
-   room. Text input uses LiveKit's `lk.chat` text stream.
+5. Visit http://localhost:3000, enter the development access token and
+   start a conversation. Permit microphone use. LiveKit dispatches one
+   agent to a random room. Typed chat uses its `lk.chat` text stream.
 
-The worker uses the documented LiveKit `AgentServer`, `AgentSession`,
-`inference.STT/LLM/TTS`, Silero VAD, and hosted `inference.TurnDetector`.
-All model IDs and voice selection are configurable via the environment.
+Switch profiles between sessions by changing the trusted worker
+configuration and restarting the worker. No unsafe mid-utterance provider
+hot-switching or hidden billable fallback is implemented.
 
-## Tests
+## Testing
 
 ```bash
 uv run --extra dev pytest -q
@@ -55,25 +64,31 @@ uv run --extra dev ruff check src tests
 cd web && npm install && npm run check && npm run build
 ```
 
-These tests require no cloud credentials, robots or microphones. They
-**do not** prove that a live cloud conversation works.
+CI uses mocks and never calls OpenRouter or starts a paid voice session.
+Actual deployment acceptance must verify OpenRouter transcription format,
+LLM streaming, TTS voice and MP3 decoding, audible interruptions, p50/p95
+latency, cost, and browser connection lifecycle with real credentials.
+OpenRouter's non-realtime STT won't yield partial words continuously.
 
 ## Security and data
 
-The token endpoint is a **single-operator development gate**, NOT production
-authentication. It requires a configured long access secret, generates
-short-lived scoped room tokens, and never returns the LiveKit API secret.
-Do not expose the development web server to the internet or deploy it
-as a multi-tenant service. Upgrade authentication, rate limiting and
-security audit before any public deployment.
+The `POST /api/session` endpoint has a **development-only**
+single-operator passphrase gate, not production authentication.
+It generates short-lived scoped room tokens; LiveKit API secrets and
+OpenRouter API keys must not be exposed to browsers. Never deploy the
+development web service publicly or as a multi-tenant system.
 
-The app itself does not persist transcripts or audio. LiveKit/provider
-processing, tracing and retention depend on external service settings.
-No automatic recording is enabled in this repository.
+This repo doesn't retain audio or transcripts. Remote AI service data
+handling is governed by the selected provider settings. No recording is
+enabled here.
 
-## Architecture
+## Ownership
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-[docs/PR_PLAN.md](docs/PR_PLAN.md), and [AGENTS.md](AGENTS.md).
-OpenRouter, Hermes, MCP, multi-speaker routing and Puppeteer belong to
-later PRs, not hidden or partially enabled features of this branch.
+LiveKit owns realtime transport and turn management. This app selects
+models and exposes the conversation client; Hermes owns any future
+agent state, Platform owns business state/evidence, Puppeteer owns
+expression, and device SDKs own physical safety.
+
+See [AGENTS.md](AGENTS.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+and [docs/PR_PLAN.md](docs/PR_PLAN.md). No Hermes, MCP, robots or
+multi-participant arbitration are implemented yet.

@@ -1,13 +1,15 @@
-"""Standalone, no-robot LiveKit voice worker.
+"""Standalone, cloud-inference LiveKit voice worker.
 
-No Hermes, MCP, Puppeteer or hardware integration is imported here.
-The worker uses LiveKit Cloud Inference; its tiny local Silero VAD is not
-an LLM or a remotely addressable model service.
+LiveKit remains the only realtime media/room/turn engine. Existing LiveKit
+provider plugins own OpenRouter API request assembly; no duplicate audio
+transport, model client, agent memory, MCP gateway or robot is created here.
 """
 
 from __future__ import annotations
 
-from .config import AGENT_NAME, CloudProfile, load_profile
+import os
+
+from .config import AGENT_NAME, OPENROUTER_API_BASE, CloudProfile, load_profile
 
 INSTRUCTIONS = (
     "You are Forge Conversationalist, a helpful spoken assistant. "
@@ -18,17 +20,65 @@ INSTRUCTIONS = (
 )
 
 
-def build_voice_session(profile: CloudProfile, *, sdk: object | None = None) -> object:
-    """Construct a LiveKit voice session; SDK can be substituted by offline tests."""
+def build_voice_session(
+    profile: CloudProfile,
+    *,
+    sdk: object | None = None,
+    openai_plugin: object | None = None,
+    openrouter_key: str | None = None,
+) -> object:
+    """Assemble a LiveKit AgentSession from independent provider selections.
+
+    Testing can inject SDK constructors. A missing OpenRouter key fails
+    before creating any cloud client or audio model. Provider endpoints are
+    fixed by the application, not by an untrusted browser participant.
+    """
+    api_key = openrouter_key if openrouter_key is not None else os.getenv("OPENROUTER_API_KEY")
+    if profile.requires_openrouter and not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
+
     if sdk is None:
         from livekit import agents as sdk
+    if profile.requires_openrouter and openai_plugin is None:
+        from livekit.plugins import openai as openai_plugin
 
     from livekit.plugins import silero
 
+    stt = (
+        sdk.inference.STT(model=profile.stt_model, language=profile.stt_language)
+        if profile.stt_provider == "livekit"
+        else openai_plugin.STT(
+            model=profile.stt_model,
+            language=profile.stt_language,
+            base_url=OPENROUTER_API_BASE,
+            api_key=api_key,
+            use_realtime=False,  # OpenRouter offers buffered transcription, not WS STT
+        )
+    )
+    llm = (
+        sdk.inference.LLM(model=profile.llm_model)
+        if profile.llm_provider == "livekit"
+        else openai_plugin.LLM.with_openrouter(
+            model=profile.llm_model,
+            api_key=api_key,
+            base_url=OPENROUTER_API_BASE,
+        )
+    )
+    tts = (
+        sdk.inference.TTS(model=profile.tts_model, voice=profile.tts_voice)
+        if profile.tts_provider == "livekit"
+        else openai_plugin.TTS(
+            model=profile.tts_model,
+            voice=profile.tts_voice,
+            base_url=OPENROUTER_API_BASE,
+            api_key=api_key,
+            response_format=profile.tts_response_format,
+        )
+    )
     return sdk.AgentSession(
-        stt=sdk.inference.STT(model=profile.stt_model, language=profile.stt_language),
-        llm=sdk.inference.LLM(model=profile.llm_model),
-        tts=sdk.inference.TTS(model=profile.tts_model, voice=profile.tts_voice),
+        stt=stt,
+        llm=llm,
+        tts=tts,
         vad=silero.VAD.load(),
         turn_handling=sdk.TurnHandlingOptions(turn_detection=sdk.inference.TurnDetector()),
     )
@@ -41,6 +91,8 @@ def main() -> None:
 
     load_dotenv(".env.local")
     profile = load_profile()
+    if profile.requires_openrouter and not os.getenv("OPENROUTER_API_KEY"):
+        raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
     server = AgentServer()
 
     class Conversationalist(Agent):

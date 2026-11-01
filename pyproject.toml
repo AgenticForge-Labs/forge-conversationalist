@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Device-independent LiveKit voice conversation worker"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-  "livekit-agents[silero]>=1.8,<1.9",
+  "livekit-agents[openai,silero]>=1.8,<1.9",
   "python-dotenv>=1.0,<2.0",
 ]
 

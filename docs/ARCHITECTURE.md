@@ -1,38 +1,59 @@
 # Forge Conversationalist architecture
 
-## Scope of PR 1
-A device-independent, cloud-inference voice worker and browser client. A default
-room contains one human participant and one voice agent. No robot, Hermes session,
-MCP server, private company data, local LLM, or persistent user memory is required.
+## Current scope — expanded PR 1 (unmerged)
+A device-independent LiveKit voice worker and browser client supporting three
+cloud profiles: LiveKit Inference, OpenRouter, and hybrid stage selection.
+A default room has one human participant and one conversational agent.
+No robot, Hermes session, MCP server, company data, local LLM, or persistent
+memory is required.
 
-Browser audio -> LiveKit room -> LiveKit Agents STT / LLM / TTS (Cloud Inference)
--> LiveKit room audio -> browser speakers.
+Browser audio -> LiveKit WebRTC room -> LiveKit Agents voice session
+  -> independently selected STT, LLM, TTS models
+  -> LiveKit room -> browser speakers.
 
-The agent worker owns only the conversation instructions and selected model IDs.
-LiveKit owns VAD, turn detection, interruption, streaming media, and its agent
-session lifecycle. Silero VAD is CPU-local and does not host a language model.
-The browser does not invoke model APIs directly and never receives server secrets.
+LiveKit owns VAD, turn detection, realtime media, playback and interruption.
+For OpenRouter STT we explicitly select the *non-realtime/buffered* OpenAI
+plugin adapter. OpenRouter has dedicated HTTP transcription and speech
+endpoints, not a guaranteed WS STT connection. That imposes different
+response latency from LiveKit's streaming speech options. OpenRouter TTS is
+chunked via the existing LiveKit OpenAI-compatible plugin. Genuine service
+compatibility, formats, voices and latency require attended provider testing;
+mock tests are not evidence of actual playout.
+
+Only the worker process receives OPENROUTER_API_KEY. The URL is pinned to
+https://openrouter.ai/api/v1 in trusted source, not passed from a browser.
+No duplicate model client, audio transport, agent memory or voice server.
+Silero VAD can run on CPU; no local LLM is required.
+
+## Provider profiles
+- livekit: LiveKit STT / LLM / TTS, unchanged baseline.
+- openrouter: OpenRouter Parakeet STT, selected LLM, Qwen TTS.
+- hybrid: LiveKit STT / OpenRouter LLM / LiveKit TTS by default.
+- Each stage can be overridden independently using explicit environment
+  fields. Provider/model/voice selections are validated before startup.
+- Model catalogs and supported voices change; deployment should check current
+  OpenRouter model metadata. Qwen Flash's loongjohn voice is not Reachy's
+  Aiden voice and must not be described as a voice clone or equivalent.
+- No implicit provider fallback or credential routing: failures are errors,
+  not permission expansions or hidden additional billable requests.
 
 ## Contract boundaries
-- The browser sends `lk.chat` text to the LiveKit participant when typed text is used.
+- The browser sends `lk.chat` text to the LiveKit room for typed input.
 - LiveKit publishes speech/text output using its native transcript streams.
-- The only web API exposed by the app is `POST /api/session`, a guarded room
-  token issuance endpoint that creates a random one-user room and requests one
-  named LiveKit agent dispatch; no unrestricted room selection.
-- A local-development access passphrase protects token issuance and is not a
-  production identity provider; production deployment requires real authentication,
-  rate limits, logging policies and live threat review.
-- No raw microphone audio is retained by this repo. Browser transcript view is
-  ephemeral and resets with the page; LiveKit/provider handling is subject to
-  their configured service policy.
-- STT, LLM, TTS are selected independently through validated model identifiers.
+- The only web API exposed here is `POST /api/session`, a guarded room
+  token issuance endpoint creating a random room and explicitly dispatching
+  one named agent. No arbitrary user-selected room or agent names.
+- The development access token is not production authentication: any
+  production deployment needs actual identity, rate limiting and review.
+- No audio or transcript is persisted by this app; retention in selected
+  remote AI providers depends on their own service terms and settings.
+- Stage selection comes only from trusted worker configuration.
+- No live cloud or hardware validation has been performed on this branch.
 
 ## Future additive integrations — not yet implemented
-PR 2: OpenRouter audio/LLM provider parity.
-PR 3: authenticated generic MCP and Platform gateway connections.
-PR 4: external Hermes agent-session adapter (no duplicate agent state).
-PR 5: participant/mic/speaker routing policy.
-PR 6: optional Puppeteer performance through playback events.
+Next: authenticated generic MCP and Platform gateway connections.
+Then: external Hermes session adapters, multi-device/agent routing, optional
+Puppeteer performance based on real playback events.
 
-These future adapters must never bypass their owning systems or assume
-unmerged work in sibling repositories.
+These future adapters cannot bypass their owning services or assume
+unmerged sibling PRs are present in main.

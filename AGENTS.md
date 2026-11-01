@@ -1,19 +1,25 @@
 # Repository development rules
 
 Read the organization-level `development.md` and `architecture.md` first.
-GitHub `main` is the authoritative integrated state; review open PRs before branching.
+GitHub `main` is authoritative; inspect open PRs before branching.
 
 ## Ownership
-- Forge Conversationalist owns voice UI, LiveKit session configuration, and optional adapters.
-- LiveKit owns WebRTC, VAD/turn detection, session streaming, interruptions, and playout.
-- Hermes owns the lifecycle, memory, and tools of its existing agents.
-- AgenticForge Platform / ContextForge owns its virtual MCP tool catalog, grants, and operational evidence.
-- Forge Puppeteer owns performer coordination; SDKs own motion and safety.
-- Never implement a competing gateway, LLM memory store, hardware driver, or voice transport here.
+- Forge Conversationalist owns conversation UI, provider choice and adapters.
+- LiveKit owns realtime rooms, VAD, turn detection, streaming and playout.
+- Hermes owns existing agent sessions, memory and tools.
+- Platform / ContextForge owns MCP grants, operational evidence and shared state.
+- Puppeteer owns performer coordination; device SDKs own motion and safety.
+- Never implement a competing audio engine, gateway, agent memory store or robot driver here.
 
-## Security and tests
-Do not commit secrets or turn on unauthenticated room-token issuance.
-Mock cloud inference and server SDKs in CI; real provider and device acceptance is explicitly attended.
-No local robot or LLM is required.
-Do not merge on green unit tests alone if the PR requires live cloud audio acceptance.
-Keep model/provider identifiers configurable and record observed provider latency and costs in testing.
+## Security, providers and tests
+- OpenRouter and LiveKit inference may be independently selected for STT,
+  LLM and TTS; configure via trusted environment, never browser requests.
+- Never put OpenRouter keys in web/.env.local or NEXT_PUBLIC_* variables.
+- The fixed OpenRouter base URL is owned by this backend and not user input.
+- OpenRouter transcription uses HTTP (non-realtime) until genuine provider
+  support for streaming STT is verified. No implied low-latency guarantee.
+- Validate model voice IDs against each provider's current catalog in
+  attended acceptance; don't assume a Qwen voice is Reachy's Aiden.
+- Offline CI mocks providers; cloud audio and real costs require attended testing.
+- No local LLM, robot, Hermes session or MCP server is required for startup.
+- Do not merge with live audio acceptance incomplete unless explicitly deferred.
