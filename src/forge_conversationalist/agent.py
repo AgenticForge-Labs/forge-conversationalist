@@ -52,6 +52,8 @@ def build_voice_session(
 
     from livekit.plugins import silero
 
+    local_turn_model = os.getenv("CONVERSATIONALIST_TURN_DETECTOR_VERSION") == "v1-mini"
+
     stt = (
         sdk.inference.STT(model=profile.stt_model, language=profile.stt_language)
         if profile.stt_provider == "livekit"
@@ -83,41 +85,68 @@ def build_voice_session(
             response_format=profile.tts_response_format,
         )
     )
+    turn_handling = {
+        "turn_detection": _build_turn_detector(sdk),
+    }
+    if local_turn_model:
+        # Adaptive interruption uses a separate LiveKit cloud endpoint.
+        # Keep local runs fully on-device with the standard VAD strategy.
+        turn_handling["interruption"] = {"mode": "vad"}
+
     return sdk.AgentSession(
         stt=stt,
         llm=llm,
         tts=tts,
         vad=silero.VAD.load(),
-        turn_handling=sdk.TurnHandlingOptions(turn_detection=sdk.inference.TurnDetector()),
+        turn_handling=sdk.TurnHandlingOptions(**turn_handling),
     )
+
+
+def _build_turn_detector(sdk: object) -> object:
+    """Build LiveKit's default detector or an explicitly selected version."""
+    version = os.getenv("CONVERSATIONALIST_TURN_DETECTOR_VERSION")
+    if version is None:
+        return sdk.inference.TurnDetector()
+    if version not in {"v1", "v1-mini"}:
+        raise ValueError("CONVERSATIONALIST_TURN_DETECTOR_VERSION must be v1 or v1-mini")
+    return sdk.inference.TurnDetector(version=version)
+
+
+async def entrypoint(ctx: object) -> None:
+    """Create a room session from worker environment.
+
+    This must stay module-level: LiveKit's Linux process executor pickles
+    the entrypoint before dispatching a job to its worker process.
+    """
+    from livekit.agents import Agent
+
+    profile = load_profile()
+    integrations = load_integrations()
+    session = build_voice_session(profile)
+    agent = Agent(
+        instructions=INSTRUCTIONS,
+        tools=build_assistant_tools(integrations),
+    )
+    await session.start(room=ctx.room, agent=agent)
+    # A fixed greeting needs TTS only. Asking the LLM to generate it with only
+    # system instructions fails on providers that require a user query and
+    # creates an unnecessary model request.
+    await session.say("Hello! I'm here to help.")
 
 
 def main() -> None:
     from dotenv import load_dotenv
     from livekit import agents
-    from livekit.agents import Agent, AgentServer
+    from livekit.agents import AgentServer
 
     load_dotenv(".env.local")
     profile = load_profile()
-    integrations = load_integrations()
+    load_integrations()
     if profile.requires_openrouter and not os.getenv("OPENROUTER_API_KEY"):
         raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
     server = AgentServer()
 
-    class Conversationalist(Agent):
-        def __init__(self) -> None:
-            super().__init__(
-                instructions=INSTRUCTIONS,
-                tools=build_assistant_tools(integrations),
-            )
-
-    @server.rtc_session(agent_name=AGENT_NAME)
-    async def entrypoint(ctx: agents.JobContext) -> None:
-        session = build_voice_session(profile)
-        await session.start(room=ctx.room, agent=Conversationalist())
-        await session.generate_reply(
-            instructions="Greet the person briefly and invite them to speak."
-        )
+    server.rtc_session(agent_name=AGENT_NAME)(entrypoint)
 
     agents.cli.run_app(server)
 

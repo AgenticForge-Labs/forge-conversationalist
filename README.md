@@ -31,6 +31,14 @@ robot motion, or a new realtime audio engine.
    and the **development access token** only, not OpenRouter/MCP/Hermes keys.
    Start `cd web && npm install && npm run dev`; visit http://localhost:3000.
 
+For a loopback-only LiveKit development server, set both env files to
+`LIVEKIT_URL=ws://localhost:7880`, `LIVEKIT_API_KEY=devkey`, and
+`LIVEKIT_API_SECRET=secret`; start `livekit-server --dev` bound to loopback.
+Set `CONVERSATIONALIST_TURN_DETECTOR_VERSION=v1-mini` in the worker env to run
+the turn detector locally. This loads a roughly 244 MB model and uses VAD-based
+interruption handling; the default cloud setup keeps LiveKit's automatic turn
+detector and adaptive interruption selection.
+
 ## Optional lightweight agent integrations
 
 **MCP** is off by default. Enable with a *trusted*, authorized MCP URL,

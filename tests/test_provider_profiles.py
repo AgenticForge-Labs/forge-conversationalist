@@ -111,6 +111,28 @@ def test_openrouter_stages_use_fixed_base_and_transcription_http() -> None:
     assert openai.STT.call_count == 1
 
 
+def test_local_turn_detector_can_be_pinned_to_mini_without_changing_default() -> None:
+    profile = load_profile({"CONVERSATIONALIST_PRESET": "openrouter"})
+    with patch.dict("os.environ", {}, clear=True):
+        default_result, default_sdk, _ = _build(profile)
+    default_sdk.inference.TurnDetector.assert_called_once_with()
+    assert default_result["turn_handling"] == {"turn_detection": "turn-detector"}
+
+    sdk, openai, silero = _fake_adapters()
+    with (
+        patch.dict("os.environ", {"CONVERSATIONALIST_TURN_DETECTOR_VERSION": "v1-mini"}),
+        patch.dict("sys.modules", {"livekit.plugins.silero": silero}),
+    ):
+        result = build_voice_session(
+            profile, sdk=sdk, openai_plugin=openai, openrouter_key="test-key"
+        )
+    sdk.inference.TurnDetector.assert_called_once_with(version="v1-mini")
+    assert result["turn_handling"] == {
+        "turn_detection": "turn-detector",
+        "interruption": {"mode": "vad"},
+    }
+
+
 def test_hybrid_selects_one_openrouter_stage() -> None:
     profile = load_profile({"CONVERSATIONALIST_PRESET": "hybrid"})
     result, sdk, openai = _build(profile)
