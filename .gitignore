@@ -1,0 +1,14 @@
+.env
+.env.local
+.env.*.local
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+node_modules/
+web/.next/
+web/.env.local
+dist/
+*.egg-info/
+coverage/
