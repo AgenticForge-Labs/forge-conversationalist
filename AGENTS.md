@@ -1,25 +1,28 @@
 # Repository development rules
 
-Read the organization-level `development.md` and `architecture.md` first.
-GitHub `main` is authoritative; inspect open PRs before branching.
+Read organization-level `development.md` and `architecture.md` first.
+GitHub main is the authoritative integrated state; inspect open PRs.
+PR #2 is stacked on unmerged PR #1; preserve dependency and merge in order.
 
-## Ownership
-- Forge Conversationalist owns conversation UI, provider choice and adapters.
-- LiveKit owns realtime rooms, VAD, turn detection, streaming and playout.
-- Hermes owns existing agent sessions, memory and tools.
-- Platform / ContextForge owns MCP grants, operational evidence and shared state.
-- Puppeteer owns performer coordination; device SDKs own motion and safety.
-- Never implement a competing audio engine, gateway, agent memory store or robot driver here.
+## Boundaries
+- LiveKit owns realtime audio, rooms, VAD and playback.
+- Conversationalist owns its lightweight agent configuration and optional tools.
+- Use native LiveKit MCPToolset for MCP, with exact server-side authorized grants;
+  do not create a second gateway or trust client-side filtering as security.
+- Hermes owns its API session, toolset, runs, memory and longer work. Delegate
+  using its authenticated Runs API; do not clone its agent/session authority.
+- Platform owns operational evidence and ContextForge tool federation.
+- Puppeteer owns semantic robot performance; SDKs own hardware execution and safety.
 
-## Security, providers and tests
-- OpenRouter and LiveKit inference may be independently selected for STT,
-  LLM and TTS; configure via trusted environment, never browser requests.
-- Never put OpenRouter keys in web/.env.local or NEXT_PUBLIC_* variables.
-- The fixed OpenRouter base URL is owned by this backend and not user input.
-- OpenRouter transcription uses HTTP (non-realtime) until genuine provider
-  support for streaming STT is verified. No implied low-latency guarantee.
-- Validate model voice IDs against each provider's current catalog in
-  attended acceptance; don't assume a Qwen voice is Reachy's Aiden.
-- Offline CI mocks providers; cloud audio and real costs require attended testing.
-- No local LLM, robot, Hermes session or MCP server is required for startup.
-- Do not merge with live audio acceptance incomplete unless explicitly deferred.
+## Safety and tests
+- All MCP/Hermes credentials stay in Python worker env, not web/.env.local.
+- MCP must have a nonempty explicit tool allowlist and scoped credential; no
+  server-provided wildcard tools by default.
+- Consequential writes and robot motion require upstream owner approvals and
+  hardware safety. This repo exposes no raw robot driver.
+- Hermes submissions return admission only; poll actual status to claim a
+  completed task. Do not automatically retry ambiguous submissions.
+- No Hermes TUI/CLI session takeover via API. No automatic completion push.
+- Cloud/provider authentication, microphone playout, MCP, Hermes and physical
+  operations need attended acceptance; unit-test green is not production ready.
+- Keep PR statuses and exact SHAs in handoff.
