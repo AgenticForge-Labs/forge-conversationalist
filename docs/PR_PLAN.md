@@ -1,19 +1,26 @@
 # Mostly linear PR program
 
-PR 0 (main): repository README initialization.
-PR 1 (OPEN draft, unmerged): standalone LiveKit Cloud/Inferences + OpenRouter
-and hybrid speech pipeline, browser client, gated room tokens, offline tests.
-PR 2 (this stacked OPEN draft, based on PR 1): optional narrow MCP toolset
-plus Hermes Runs API delegation and status tools, tests, source-controlled
-architecture/security examples, credential and failure handling.
-PR 3 (after merge of PRs 1 and 2): Hermes-primary API-owned sessions and,
-separately, authenticated gateway WebSocket integration for existing
-CLI/TUI-owned sessions if needed; progress subscriptions and quiet-break
-completion notification.
-PR 4: participant/mic/speaker/agent routing policy.
-PR 5: Puppeteer integration only after its required dependency PRs merge
-and attended hardware safety validation is performed.
+PR #1 (merged): LiveKit room, no-robot browser UI, OpenRouter/LiveKit/hybrid
+inference profiles, basic voice-worker tests. Provider compatibility
+and microphone-to-speaker latency still require attended cloud validation.
 
-Strict dependency order: PR 1 -> PR 2 -> later changes.
-Do not merge PR 2 while PR 1 remains unmerged. Avoid a new branch from
-main until dependent work is integrated.
+PR #2 (merged): optional authenticated, allowlisted MCP toolset and
+API-owned Hermes Runs delegation. Real gateway/Hermes integration remains
+disabled by default pending attended validation.
+
+PR #3 (this branch): device-independent presentation signals, optional
+status chimes and emotion vocabulary, browser microphone/speaker selectors,
+robot-free UI previews, tests and documentation. No Platform subscription.
+
+Future coherent changes after PR #3:
+- Verified subscribed notification ingress from the owning Platform producer
+  (identity/authz, privacy, delivery/replay policy, user preferences).
+- Canonical presentation emitter integration with LiveKit browser clients and
+  other registered endpoints with verified message origin.
+- Optional Puppeteer-approved indicator and expressive device renderers,
+  after its independent talking/idle and SDK work is integrated.
+- Full Hermes interactive session continuity and multiple participants/
+  input arbitration, separately qualified.
+
+PRs already merged are not claimed to have passed remote provider or
+physical hardware tests. Main contains reusable code, not a live deployment.
