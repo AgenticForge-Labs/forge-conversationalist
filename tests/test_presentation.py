@@ -35,7 +35,7 @@ def test_emotions_are_semantic_not_trajectories(emotion: str) -> None:
     cue = plan_cue(PresentationEvent(f"emotion-{emotion}", "emotion", emotion))
     assert cue.emotion == emotion
     assert cue.sound == "none"
-    assert "motion" not in cue.as_json()
+    assert "motion" not in json.loads(cue.as_json())
 
 
 @pytest.mark.parametrize("kind,sound", [
