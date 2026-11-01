@@ -7,6 +7,7 @@ import { AccessToken } from "livekit-server-sdk";
 export const runtime = "nodejs";
 
 const AGENT_NAME = "forge-conversationalist";
+const OPENROUTER_QWEN_VOICES = ["loongjohn", "longanhuan_v3.6"] as const;
 
 function authorized(received: string, configured: string): boolean {
   const left = Buffer.from(received, "utf8");
@@ -32,6 +33,24 @@ export async function POST(request: NextRequest) {
   if (!bearer.startsWith("Bearer ") || !authorized(bearer.slice(7), configured)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  let requestedVoice: unknown;
+  const rawBody = await request.text();
+  if (rawBody) {
+    try {
+      const body: unknown = JSON.parse(rawBody);
+      if (body && typeof body === "object" && "ttsVoice" in body) {
+        requestedVoice = body.ttsVoice;
+      }
+    } catch {
+      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    }
+  }
+  if (
+    requestedVoice !== undefined
+    && !OPENROUTER_QWEN_VOICES.includes(requestedVoice as typeof OPENROUTER_QWEN_VOICES[number])
+  ) {
+    return NextResponse.json({ error: "Unsupported voice" }, { status: 400 });
+  }
 
   // Never accept arbitrary room/identity/agent values supplied by the browser.
   const roomName = `conversationalist-${randomUUID()}`;
@@ -45,7 +64,10 @@ export async function POST(request: NextRequest) {
     canPublishData: true,
   });
   accessToken.roomConfig = new RoomConfiguration({
-    agents: [new RoomAgentDispatch({ agentName: AGENT_NAME })],
+    agents: [new RoomAgentDispatch({
+      agentName: AGENT_NAME,
+      metadata: requestedVoice ? JSON.stringify({ tts_voice: requestedVoice }) : "",
+    })],
   });
 
   const token = await accessToken.toJwt();

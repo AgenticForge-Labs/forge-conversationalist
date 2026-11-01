@@ -14,6 +14,11 @@ import {
 } from "@livekit/components-react";
 
 type RoomGrant = { token: string; serverUrl: string; roomName: string };
+const QWEN_TTS_VOICES = [
+  { id: "", label: "Configured default" },
+  { id: "loongjohn", label: "Loong John" },
+  { id: "longanhuan_v3.6", label: "Long An Huan" },
+] as const;
 
 function RoomConversation() {
   const { state, audioTrack } = useVoiceAssistant();
@@ -90,6 +95,7 @@ function RoomConversation() {
 
 export default function Home() {
   const [accessToken, setAccessToken] = useState("");
+  const [ttsVoice, setTtsVoice] = useState<(typeof QWEN_TTS_VOICES)[number]["id"]>("");
   const [room, setRoom] = useState<RoomGrant | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -101,7 +107,8 @@ export default function Home() {
       const response = await fetch("/api/session", {
         method: "POST",
         cache: "no-store",
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(ttsVoice ? { ttsVoice } : {}),
       });
       if (!response.ok) throw new Error(response.status === 401
         ? "Invalid local development access token."
@@ -134,6 +141,11 @@ export default function Home() {
             onChange={(e) => setAccessToken(e.target.value)}
             placeholder="Configured in web/.env.local"
           />
+          <label htmlFor="tts-voice">Voice</label>
+          <select id="tts-voice" value={ttsVoice} onChange={(event) => setTtsVoice(event.target.value as typeof ttsVoice)}>
+            {QWEN_TTS_VOICES.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
+          </select>
+          <p className="subtle">Qwen voices apply when OpenRouter Qwen TTS is configured. Configured default keeps the worker’s voice setting.</p>
           <button disabled={!accessToken || loading} onClick={start}>
             {loading ? "Connecting…" : "Start conversation"}
           </button>

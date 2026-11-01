@@ -39,6 +39,12 @@ the turn detector locally. This loads a roughly 244 MB model and uses VAD-based
 interruption handling; the default cloud setup keeps LiveKit's automatic turn
 detector and adaptive interruption selection.
 
+Before starting a conversation, the browser offers the configured TTS voice or
+either supported voice for OpenRouter's Qwen TTS model. The server validates a
+voice choice and passes it to the worker as room dispatch metadata. It only
+overrides the voice when that Qwen TTS model is configured; other TTS profiles
+keep their configured voice.
+
 ## Optional lightweight agent integrations
 
 **MCP** is off by default. Enable with a *trusted*, authorized MCP URL,

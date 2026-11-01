@@ -28,6 +28,8 @@ OPENROUTER_DEFAULT_TTS = "qwen/qwen-audio-3.0-tts-flash"
 # From OpenRouter's published supported_voices model catalog as of Nov 2026.
 # This is not Reachy's Aiden voice.
 OPENROUTER_DEFAULT_VOICE = "loongjohn"
+# Keep these aligned with OpenRouter's supported_voices for the configured Qwen TTS model.
+OPENROUTER_TTS_VOICES = frozenset(("loongjohn", "longanhuan_v3.6"))
 
 _PROVIDERS = frozenset({"livekit", "openrouter"})
 _PRESETS: dict[str, tuple[Provider, Provider, Provider]] = {

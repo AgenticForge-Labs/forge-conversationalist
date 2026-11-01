@@ -7,10 +7,19 @@ transport, model client, agent memory, MCP gateway or robot is created here.
 
 from __future__ import annotations
 
+import json
 import os
+from dataclasses import replace
 
 from .assistant_tools import build_assistant_tools
-from .config import AGENT_NAME, OPENROUTER_API_BASE, CloudProfile, load_profile
+from .config import (
+    AGENT_NAME,
+    OPENROUTER_API_BASE,
+    OPENROUTER_DEFAULT_TTS,
+    OPENROUTER_TTS_VOICES,
+    CloudProfile,
+    load_profile,
+)
 from .integrations import load_integrations
 
 INSTRUCTIONS = (
@@ -120,7 +129,7 @@ async def entrypoint(ctx: object) -> None:
     """
     from livekit.agents import Agent
 
-    profile = load_profile()
+    profile = _profile_for_job(load_profile(), getattr(ctx.job, "metadata", ""))
     integrations = load_integrations()
     session = build_voice_session(profile)
     agent = Agent(
@@ -132,6 +141,30 @@ async def entrypoint(ctx: object) -> None:
     # system instructions fails on providers that require a user query and
     # creates an unnecessary model request.
     await session.say("Hello! I'm here to help.")
+
+
+def _requested_qwen_voice(metadata: str) -> str | None:
+    """Read only an allowlisted voice from server-authored job metadata."""
+    if not metadata:
+        return None
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    voice = request.get("tts_voice") if isinstance(request, dict) else None
+    return voice if isinstance(voice, str) and voice in OPENROUTER_TTS_VOICES else None
+
+
+def _profile_for_job(profile: CloudProfile, metadata: str) -> CloudProfile:
+    """Apply a requested voice only to the OpenRouter Qwen TTS profile."""
+    voice = _requested_qwen_voice(metadata)
+    if (
+        voice is not None
+        and profile.tts_provider == "openrouter"
+        and profile.tts_model == OPENROUTER_DEFAULT_TTS
+    ):
+        return replace(profile, tts_voice=voice)
+    return profile
 
 
 def main() -> None:

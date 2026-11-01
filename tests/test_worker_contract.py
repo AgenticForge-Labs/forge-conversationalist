@@ -5,8 +5,18 @@ import pickle
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
-from forge_conversationalist.agent import build_voice_session, entrypoint
-from forge_conversationalist.config import CloudProfile
+from forge_conversationalist.agent import (
+    _profile_for_job,
+    _requested_qwen_voice,
+    build_voice_session,
+    entrypoint,
+)
+from forge_conversationalist.config import (
+    OPENROUTER_DEFAULT_TTS,
+    OPENROUTER_DEFAULT_VOICE,
+    CloudProfile,
+    load_profile,
+)
 
 
 def test_job_entrypoint_is_importable_and_picklable() -> None:
@@ -24,11 +34,32 @@ def test_entrypoint_uses_tts_only_greeting_without_an_llm_request() -> None:
         patch("forge_conversationalist.agent.build_voice_session", return_value=session),
         patch("forge_conversationalist.agent.build_assistant_tools", return_value=[]),
     ):
-        asyncio.run(entrypoint(SimpleNamespace(room="room")))
+        asyncio.run(entrypoint(SimpleNamespace(room="room", job=SimpleNamespace(metadata=""))))
 
     session.start.assert_awaited_once()
     session.say.assert_awaited_once_with("Hello! I'm here to help.")
     session.generate_reply.assert_not_called()
+
+
+def test_job_voice_metadata_is_allowlisted_and_only_applies_to_qwen_openrouter() -> None:
+    assert _requested_qwen_voice('{"tts_voice":"longanhuan_v3.6"}') == "longanhuan_v3.6"
+    assert _requested_qwen_voice('{"tts_voice":"untrusted-value"}') is None
+    assert _requested_qwen_voice('{"tts_voice":[]}') is None
+    assert _requested_qwen_voice("not json") is None
+
+    openrouter = load_profile({"CONVERSATIONALIST_PRESET": "openrouter"})
+    chosen = _profile_for_job(openrouter, '{"tts_voice":"longanhuan_v3.6"}')
+    assert chosen.tts_voice == "longanhuan_v3.6"
+
+    other_model = CloudProfile(
+        tts_provider="openrouter",
+        tts_model="other/provider-model",
+        tts_voice=OPENROUTER_DEFAULT_VOICE,
+    )
+    assert _profile_for_job(other_model, '{"tts_voice":"longanhuan_v3.6"}') is other_model
+    livekit_tts = CloudProfile(tts_voice="provider/default")
+    assert _profile_for_job(livekit_tts, '{"tts_voice":"longanhuan_v3.6"}') is livekit_tts
+    assert openrouter.tts_model == OPENROUTER_DEFAULT_TTS
 
 
 def test_session_uses_profile_and_livekit_owned_vad_turns() -> None:
