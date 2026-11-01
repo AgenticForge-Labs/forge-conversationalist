@@ -1,65 +1,52 @@
 # Forge Conversationalist architecture
 
-## Current implementation: stacked PRs, not yet in main
-PR #1 defines LiveKit WebRTC transport, a simple browser voice UI, native
-LiveKit Agents STT/LLM/TTS and Silero/turn detection, provider selection for
-LiveKit Inference, OpenRouter and hybrid configurations. It remains unmerged,
-awaiting attended cloud audio testing.
+## Integrated main (PRs #1 and #2)
+LiveKit owns rooms, microphone/audio tracks, TTS playback and turn
+detection. The worker selects independent LiveKit/OpenRouter/hybrid STT,
+LLM and TTS models and provides a lightweight voice agent. Hermes is
+an opt-in API-owned task-delegation backend; it owns all actual agent
+runs and memory. Native LiveKit MCPToolset can connect to an authorized
+MCP server with exact tool grants. Platform owns all company facts and
+business events; Puppeteer owns validated physical performance; SDKs own
+hardware motion and safety. Cloud and physical integration validation
+remains outstanding; nothing here asserts deployed production readiness.
 
-This stacked PR adds an optional lightweight-agent integration layer without
-altering voice transport or inventing a second agent runtime.
+## Device-independent presentation (PR #3)
+Audio input/output is attached to a **LiveKit participant**, not a robot.
+The browser offers microphone and speaker selectors (device availability
+and speaker routing depend on browser/OS support). A future Reachy or
+other physical audio client should join the same LiveKit room through
+its owning SDK media bridge without making it the agent's microphone
+or speaker by default.
 
-Browser -> LiveKit room -> LiveKit AgentSession (one room-scoped assistant)
-                                  |               |
-                  approved MCP Toolset        delegate_to_hermes
-                       |                           |
-             authenticated gateway            Hermes Runs API
-                    |                         API-owned session
-               existing producers
+Small semantic presentation signals are independent of the microphone
+and speaker:
+- Presence: idle/listening/speaking.
+- Emotions: neutral/happy/curious/confused/concerned/excited.
+- Notifications: new mail/order/failure indicator with an optional
+  chime and generic visual label.
 
-## MCP and safety contract
-- Disabled when MCP_URL is absent; no implicit "full tool" discovery.
-- Trusted worker configuration provides URL, bearer token and nonempty exact
-  `MCP_ALLOWED_TOOLS`. MCPServerHTTP is pinned to Streamable HTTP; allowed
-  tool names are passed to LiveKit's native server filter.
-- The credential and allowlist belong to the backend, never to a browser
-  participant or LLM prompt. Plain HTTP is allowed only on loopback.
-- **An MCP allowlist hides tools from the agent but is NOT authorization.**
-  The MCP gateway itself must independently check identity, scope, permissions,
-  approvals and consequential actions; robots stay behind Puppeteer and SDK
-  safety. Platform ContextForge remains a source-controlled development
-  foundation, not a deployed production endpoint.
-- Read-only tool grants are the advised first profile; no production write or
-  physical capability is enabled in this repository.
-- No duplicate gateway, arbitrary tool execution, agent tool registry or
-  robot driver is implemented here.
+The canonical Python `PresentationEvent` -> `PresentationCue` mapping
+in `presentation.py` is deterministic, provider-free and robot-free.
+The browser includes only manual preview controls and a separate LiveKit
+voice-state readout. `publish_cue` is an optional authorized-emitter
+utility, not yet wired to a Platform event subscription or web client.
+No real provider event, notification service, data queue, or physical
+expression is implemented by PR #3. See
+[Presentation Signals](PRESENTATION_SIGNALS.md) for wire formats,
+privacy/sender verification and renderer responsibilities.
 
-## Hermes delegation contract
-- Entirely optional (HERMES_DELEGATION_ENABLED=false by default).
-- Uses Hermes' documented authenticated `POST /v1/runs` (with idempotency key)
-  and `GET /v1/runs/{id}` for progress and final output. No Hermes model
-  runner, memory or session database is copied into Conversationalist.
-- Each LiveKit room receives a distinct Hermes **API-owned** session ID.
-  Only run IDs submitted by the current room may be checked. No API attempt
-  to attach to a CLI/TUI/ACP-owned Hermes session (that requires the Hermes
-  authenticated gateway WebSocket in later dedicated primary-mode work).
-- Delegation is an *admission*, not a completion. The lightweight assistant
-  can check a run on request and speak actual returned status/output. It
-  does not claim background push notifications, approvals via voice, or
-  automatic recovery of unknown outcomes.
-- No automatic retries after ambiguous transport errors. Hermes executes
-  only with the independently configured API key and its own tool privileges;
-  for safe deployments grant a constrained Hermes tool profile.
-- API keys and MCP bearer tokens stay in the Python worker environment.
-  No provider or gateway key goes into the LiveKit room token or browser.
+## MCP and Hermes safety
+MCP tools remain opt-in and require trusted backend URLs, bearer grants
+and exact allowlists; backend authorization cannot be replaced by tool
+filtering. Hermes Runs API is an admission-and-status integration, not
+a duplicate agent runtime or takeover of an existing CLI/TUI session.
+Secrets never enter browser code. No status cue or LLM prompt can
+authorize an action against a company account or physical device.
 
-## Explicitly deferred
-- Hermes-primary interactive session, streaming run events, approvals,
-  and automatic quiet-break completion announcements.
-- Multi-microphone or multi-agent arbitration.
-- Live ContextForge authorization/security acceptance and connected robotics
-  hardware/physical execution.
-- Production user identity, authorization, and secrets provisioning.
-
-No real credentials, remote MCP server, local Hermes process or robot device
-was used during CI. Those checks require local Codex acceptance before merge.
+## Deferred
+A trusted Platform/Business Engine event subscription, authenticated
+event fanout, room-origin filtering, alert preferences, privacy policy,
+real display/light/robot renderers, multi-participant microphone/speaker
+arbitration and live hardware tests. No amplitude-reactive robot motion
+is desired or planned.

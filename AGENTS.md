@@ -2,7 +2,7 @@
 
 Read organization-level `development.md` and `architecture.md` first.
 GitHub main is the authoritative integrated state; inspect open PRs.
-PR #2 is stacked on unmerged PR #1; preserve dependency and merge in order.
+PRs #1 and #2 are merged into main; PR #3 adds presentation contracts and browser device selection.
 
 ## Boundaries
 - LiveKit owns realtime audio, rooms, VAD and playback.
@@ -26,3 +26,18 @@ PR #2 is stacked on unmerged PR #1; preserve dependency and merge in order.
 - Cloud/provider authentication, microphone playout, MCP, Hermes and physical
   operations need attended acceptance; unit-test green is not production ready.
 - Keep PR statuses and exact SHAs in handoff.
+
+## Device-independent presence and notifications
+- Audio belongs to a LiveKit participant, not to a particular robot or
+  personality. Browser audio selectors can change only supported devices.
+- Canonical presentation schema is `forge.presentation.v1` in
+  `presentation.py`: idle, listening, speaking; neutral, happy, curious,
+  confused, concerned, excited; mail, order, failure generic indicators.
+- Platform (or owning producer) retains mail/order/error truth and replay
+  authority; no event subscription is implemented by this repo.
+- Renderers may use icons, light, sound or approved Puppeteer semantics.
+  No microphone-loudness-driven motion, raw motor commands or silent
+  widening of robot permissions. No subscriber should trust an unverified
+  LiveKit room packet as evidence of an actual company event.
+- Never automatically speak private notification content; browser
+  notification examples must be clearly labeled manual previews.

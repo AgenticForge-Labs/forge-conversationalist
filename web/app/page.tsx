@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { PresentationPreview } from "./presentation-preview";
 import {
   BarVisualizer,
+  MediaDeviceSelect,
   LiveKitRoom,
   RoomAudioRenderer,
   useTranscriptions,
@@ -47,6 +49,15 @@ function RoomConversation() {
         {audioTrack ? <BarVisualizer state={state} trackRef={audioTrack} barCount={14} /> : null}
       </div>
       <VoiceAssistantControlBar saveUserChoices={false} />
+      <fieldset className="device-chooser">
+        <legend>Audio devices</legend>
+        <label>Microphone <MediaDeviceSelect kind="audioinput" /></label>
+        <label>Speaker <MediaDeviceSelect kind="audiooutput" /></label>
+        <p className="subtle">Use any system-supported device. Some browsers cannot switch speaker output.</p>
+      </fieldset>
+      <div className="presence" aria-live="polite">
+        Conversation state: {state === "listening" || state === "speaking" ? state : "idle"}
+      </div>
       <div className="transcript" aria-live="polite" aria-label="Conversation transcript">
         {transcriptions.length === 0 ? (
           <p className="placeholder">Speak naturally or type below to start a conversation.</p>
@@ -149,6 +160,7 @@ export default function Home() {
           {error ? <p className="error" role="alert">{error}</p> : null}
         </>
       )}
+      <PresentationPreview />
     </main>
   );
 }
