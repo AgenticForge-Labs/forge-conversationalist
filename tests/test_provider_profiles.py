@@ -157,15 +157,16 @@ def test_invalid_model_provider_and_format_fail_closed(settings: dict[str, str])
 
 def test_openrouter_key_required_before_any_provider_calls() -> None:
     sdk, openai, silero = _fake_adapters()
-    with patch.dict("os.environ", {}, clear=True), patch.dict(
-        "sys.modules", {"livekit.plugins.silero": silero}
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch.dict("sys.modules", {"livekit.plugins.silero": silero}),
+        pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"),
     ):
-        with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
-            build_voice_session(
-                load_profile({"CONVERSATIONALIST_PRESET": "hybrid"}),
-                sdk=sdk,
-                openai_plugin=openai,
-            )
+        build_voice_session(
+            load_profile({"CONVERSATIONALIST_PRESET": "hybrid"}),
+            sdk=sdk,
+            openai_plugin=openai,
+        )
     assert not sdk.AgentSession.called
     assert not sdk.inference.STT.called
     assert not openai.LLM.with_openrouter.called
