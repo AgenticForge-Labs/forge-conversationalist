@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 import pytest
 
-from forge_conversationalist.config import AGENT_NAME, CloudProfile, load_profile
 from forge_conversationalist.agent import INSTRUCTIONS
+from forge_conversationalist.config import AGENT_NAME, CloudProfile, load_profile
 
 
 def test_standalone_default_profile_is_cloud_inference() -> None:
@@ -37,8 +37,8 @@ def test_all_model_stages_are_overridable() -> None:
     ("tts_voice", ""),
 ])
 def test_invalid_profile_fails_closed(field: str, value: str) -> None:
-    params = dict(stt_model="provider/stt", llm_model="provider/llm",
-                  tts_model="provider/tts", stt_language="en", tts_voice="voice")
+    params = {"stt_model": "provider/stt", "llm_model": "provider/llm",
+              "tts_model": "provider/tts", "stt_language": "en", "tts_voice": "voice"}
     params[field] = value
     with pytest.raises(ValueError):
         CloudProfile(**params)
