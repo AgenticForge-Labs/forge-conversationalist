@@ -12,6 +12,12 @@ PR #3 (merged): device-independent presentation signals, optional
 status chimes and emotion vocabulary, browser microphone/speaker selectors,
 robot-free UI previews, tests and documentation. No Platform subscription.
 
+PR #9 (current software PR 5/5 of the Puppeteer integration): connect
+one authorized LiveKit room to the merged Puppeteer PR #13 native SDK
+three-performer semantic ensemble. No new LLM, provider or physical motion
+authority; no measured voice timing or hardware qualification. Exact
+migration of legacy stock 4G prompts/business tools is separate.
+
 Future coherent changes after PR #3:
 - Authorized consumer adapter for Platform's future communications bus.
   Publisher/subscriber identity, privacy, delivery/replay policy and
