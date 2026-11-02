@@ -156,6 +156,7 @@ class EmbodimentSession:
                     raise RuntimeError("Puppeteer embodiment contract tools unavailable")
                 phase = "performer_discover"
                 catalog = await self._call(session, "performer_discover", {})
+                phase = "validate_catalog"
                 if (catalog.get("schema") != SCHEMA
                         or catalog.get("execution_mode") != "fake"
                         or catalog.get("performer_id") != self.config.performer_id
