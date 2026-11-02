@@ -4,12 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { PresentationPreview } from "./presentation-preview";
 import {
   BarVisualizer,
-  MediaDeviceSelect,
   LiveKitRoom,
   RoomAudioRenderer,
   useTranscriptions,
   useVoiceAssistant,
   VoiceAssistantControlBar,
+  useMediaDeviceSelect,
   useRoomContext,
 } from "@livekit/components-react";
 import type { OpenRouterTtsModel } from "@/lib/openrouter-tts";
@@ -35,6 +35,41 @@ type RoomSpeechSettings = {
 };
 
 type MicrophoneMode = "continuous" | "press-to-talk";
+
+function AudioDevicePicker({ kind, label }: { kind: "audioinput" | "audiooutput"; label: string }) {
+  const { devices, activeDeviceId, setActiveMediaDevice } = useMediaDeviceSelect({
+    kind,
+    requestPermissions: false,
+  });
+  const [error, setError] = useState("");
+
+  return (
+    <label>
+      {label}
+      <select
+        value={activeDeviceId}
+        onChange={(event) => {
+          setError("");
+          void setActiveMediaDevice(event.target.value, { exact: true }).catch(() => {
+            setError(`Could not switch ${label.toLowerCase()}.`);
+          });
+        }}
+      >
+        {(devices.length === 0 || !devices.some((device) => device.deviceId === activeDeviceId)) && (
+          <option value={activeDeviceId}>
+            {activeDeviceId === "default" ? "Default device" : "Current device (unavailable)"}
+          </option>
+        )}
+        {devices.map((device) => (
+          <option key={device.deviceId} value={device.deviceId}>
+            {device.label || `${label} ${device.deviceId.slice(0, 8)}`}
+          </option>
+        ))}
+      </select>
+      {error && <span className="error" role="alert">{error}</span>}
+    </label>
+  );
+}
 
 function RoomConversation({ speech, microphoneMode, onMicrophoneModeChange, ending, onEnd, resumed }: {
   speech: RoomSpeechSettings;
@@ -423,8 +458,8 @@ function RoomConversation({ speech, microphoneMode, onMicrophoneModeChange, endi
       </fieldset>
       <fieldset className="device-chooser">
         <legend>Audio devices</legend>
-        <label>Microphone <MediaDeviceSelect kind="audioinput" /></label>
-        <label>Speaker <MediaDeviceSelect kind="audiooutput" /></label>
+        <AudioDevicePicker kind="audioinput" label="Microphone" />
+        <AudioDevicePicker kind="audiooutput" label="Speaker" />
         <p className="subtle">Use any system-supported device. Some browsers cannot switch speaker output.</p>
       </fieldset>
       <fieldset className="device-chooser">
@@ -650,7 +685,7 @@ export default function Home() {
   }
 
   return (
-    <main className="shell">
+    <main className="shell" data-lk-theme="default">
       <header>
         <p className="eyebrow">AgenticForge Labs</p>
         <h1>Forge Conversationalist</h1>
