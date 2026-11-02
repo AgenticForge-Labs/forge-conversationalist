@@ -25,6 +25,7 @@ from .config import (
     load_profile,
 )
 from .embodiment import EmbodimentSession
+from .ensemble import EnsembleSession
 from .integrations import load_integrations
 from .speech_catalog import selected_speech_model
 from .text_hook import install_assistant_text_hook, install_session_state_hook
@@ -204,11 +205,12 @@ async def entrypoint(ctx: object) -> None:
     authorized_identity = _authorized_identity(metadata)
     room_name = getattr(ctx.room, "name", None)
     agent_integrations = integrations
-    if integrations.puppeteer_stdio is not None and (
+    if (integrations.puppeteer_stdio is not None or integrations.ensemble is not None) and (
         not authorized_identity or not isinstance(room_name, str) or not room_name
     ):
-        # Do not expose action tools if the signed room dispatch lacks stable IDs.
-        agent_integrations = replace(integrations, puppeteer_stdio=None)
+        # Never connect physical performers without a signed room participant
+        # identity and a stable LiveKit room. Voice alone remains operational.
+        agent_integrations = replace(integrations, puppeteer_stdio=None, ensemble=None)
     session = build_voice_session(
         profile,
         vad_sensitivity=vad_sensitivity,
@@ -233,12 +235,23 @@ async def entrypoint(ctx: object) -> None:
         await embodiment.start()  # Fake-only discovery and MCP handshake; no SDK device.
         ctx.add_shutdown_callback(embodiment.close)
 
+    ensemble = None
+    if agent_integrations.ensemble is not None:
+        ensemble = EnsembleSession(
+            agent_integrations.ensemble,
+            room_id=room_name,
+            caller_id=authorized_identity,
+        )
+        ctx.add_shutdown_callback(ensemble.close)
+
     def handle_state(signal):
         logger.debug(
             "conversation state changed", extra={"state": signal.state, "source": signal.source}
         )
         if embodiment is not None:
             embodiment.observe(signal.state)
+        if ensemble is not None:
+            ensemble.observe(signal.state)
 
     install_session_state_hook(session, handle_state)
     agent = Agent(
@@ -248,6 +261,7 @@ async def entrypoint(ctx: object) -> None:
         tools=build_assistant_tools(
             agent_integrations,
             embodiment_session=embodiment if authorized_identity else None,
+            ensemble_session=ensemble if authorized_identity else None,
         ),
     )
     room_options = room_io.RoomOptions(
@@ -257,6 +271,11 @@ async def entrypoint(ctx: object) -> None:
     # RoomIO resolves the explicitly linked participant while starting. The
     # room must already be connected before that resolution in Agents 1.8.
     await ctx.connect()
+    if ensemble is not None:
+        # A connected authorized LiveKit room must exist before this optional
+        # host-owned child opens any native SDK sessions. No microphone/TTS
+        # stream is moved to a robot by this step.
+        await ensemble.start()
     await session.start(room=ctx.room, agent=agent, room_options=room_options)
     if authorized_identity:
         register_transcript_rpc(
@@ -286,6 +305,17 @@ def _room_instructions(
 ) -> str:
     """Add only the operator-pinned Reachy move IDs to this room's guidance."""
     config = getattr(integrations, "puppeteer_stdio", None)
+    if getattr(integrations, "ensemble", None) is not None:
+        return INSTRUCTIONS + (
+            " One operator-authorized Puppeteer room may mirror approximate "
+            "listening/speaking/idle states across three performers. These states "
+            "are not speech sample timestamps, nor are robot movements evidence "
+            "of completed company tasks. Use get_ensemble_status to inspect "
+            "individual outcomes. Use request_ensemble_gesture only when the "
+            "user explicitly requests one named gesture: yes, no, acknowledge, "
+            "or neutral. Never issue raw motion, infer physical completion from "
+            "accepted admission, or retry unknown outcomes."
+        )
     if config is None:
         if getattr(integrations, "embodiment", None) is not None:
             return INSTRUCTIONS + (

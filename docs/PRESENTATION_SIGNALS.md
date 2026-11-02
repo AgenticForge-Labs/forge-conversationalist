@@ -79,7 +79,8 @@ and robust selected-speaker arbitration for shared microphones.
 When integrating Puppeteer, consume this semantic state and map it through
 Puppeteer's existing approved `ConversationBehaviors` / native SDK
 behaviors. No bespoke head wobble, arbitrary motion or direct SDK command
-belongs in this repository. Multiple robot performers may mirror one
-performance only after Puppet's stacked dependency PRs and device
-safety acceptance are integrated. No current physical hardware validation
+belongs in this repository. The merged Puppeteer PR #13 provides the three-performer native SDK
+semantic room in software; Conversationalist PR #9 adds one LiveKit
+state-to-MCP bridge. Live hardware safety and speaker-timing validation
+remain deferred. No current physical hardware validation
 is implied.

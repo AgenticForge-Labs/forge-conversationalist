@@ -8,7 +8,7 @@ profiles plus optional authenticated MCP and Hermes delegation.
 Local OpenRouter/LiveKit voice acceptance has been exercised; hardware
 integration requires separate attended acceptance.
 
-PR #3 adds device-independent presentation signals and optional browser
+PR #3 merged device-independent presentation signals and optional browser
 microphone/speaker selection. It does **not** add a Platform subscription,
 robot motion, or a new realtime audio engine.
 
@@ -176,6 +176,45 @@ Configure `PUPPETEER_EMBODIMENT_CONFIG=/absolute/path/to/fake-performer.json`
 robot-free startup. Follow [Embodiment reference integration](docs/EMBODIMENT.md)
 for clean package install, all three fake profiles, MCP calls, action lookup,
 software tests and physical qualification gaps.
+
+## Optional native three-robot ensemble (PR #9)
+
+A single authorized LiveKit voice room can drive **the same
+idle/listening/speaking state** across Reachy Mini, StackChan and
+SO-ARM101. This uses [Forge Puppeteer's merged native ensemble
+runtime](https://github.com/AgenticForge-Labs/forge-puppeteer/pull/13),
+not the stock Reachy Conversation App, direct motor controls, or a
+second voice/LLM process. 4G remains a *conversation identity*, not a
+new robot SDK. This integration does not automatically import the
+stock 4G personality or business-tool configuration.
+
+The mode is off by default. Put these settings in the **root worker**
+`.env.local` only:
+
+```bash
+PUPPETEER_ENSEMBLE_CONFIG=/absolute/operator-reviewed/three-robots.json
+# If installed outside the worker PATH:
+PUPPETEER_ENSEMBLE_COMMAND=/absolute/path/to/forge-puppeteer-ensemble
+```
+
+Do not enable it alongside `PUPPETEER_MCP_CONFIG` or
+`PUPPETEER_EMBODIMENT_CONFIG`. The child starts only when LiveKit's
+trusted dispatch provides a stable authorized identity and the worker
+has connected to that room. State callbacks are **approximate**
+conversation state, not measured audio playout timing. The room keeps
+its current OpenRouter/LiveKit speech models, voice, MCP and Hermes
+tool configuration. The only extra agent tools are read-only
+`get_ensemble_status` and explicitly requested, finite
+`request_ensemble_gesture` (yes/no/acknowledge/neutral).
+
+The SO-ARM must have exact operator-reviewed choreography pins and the
+native SDK's independent supervisor/watchdog; simulation cannot
+approve real-world motion. Startup of a three-robot SDK child can
+contact physical devices, so inspect the config, isolate power, and
+follow attended qualification before enabling it.
+
+See [Native Ensemble](docs/NATIVE_ENSEMBLE.md) for version-pinned
+installation, contracts, tests, and the physical acceptance checklist.
 
 ## Audio devices, expressions and notifications
 
