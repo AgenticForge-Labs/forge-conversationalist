@@ -40,9 +40,10 @@ If the backend provides a verified audible playback lifecycle in the future,
 a separately reviewed adapter may send `source=playback`. Stock Reachy
 Conversation App revision `5ab905d018de8d88f07444ca57677b2ffbe762ca`
 and Reachy SDK `1.10.0rc5` do not yet provide the required end-to-end
-handoff through the existing `forge-reachy` external extension. Its
-open stacked draft PRs #3/#4 remain unmerged and must not be conflated
-with this reference integration.
+handoff through the existing `forge-reachy` external extension. The legacy forge-reachy consolidation PR #5 is merged, but the
+stock app is still separate from the native three-robot Puppeteer pathway.
+See [Native Ensemble](NATIVE_ENSEMBLE.md) for the new optional bridge;
+the fake-only reference remains deliberately unchanged.
 
 ## Installation: three independent fake configurations
 
