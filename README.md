@@ -12,6 +12,23 @@ PR #3 merged device-independent presentation signals and optional browser
 microphone/speaker selection. It does **not** add a Platform subscription,
 robot motion, or a new realtime audio engine.
 
+### 4G personality
+
+Set `CONVERSATIONALIST_PERSONALITY=4g` in the worker environment for one
+shared 4G conversation. This selects the 4G identity, company background,
+speaking style and source/permission guidance; it does not grant tools or
+enable any robot. The worker's existing authenticated MCP allowlist and
+server-side grants still determine available company tools. Configure the
+4G defaults to OpenRouter's HeyGen Voice Turbo (`heygen/heygen-voice-1-turbo`)
+with `lucian`, requiring `OPENROUTER_API_KEY`; STT and LLM follow the selected
+preset. Explicit TTS settings and authorized per-room voice selection can
+override that default.
+
+This is an adaptation of the stock profile for a device-independent LiveKit
+session, not full feature parity: Reachy-specific tools, Business Engine
+WorkItem adapters, notifications and the stock hosted voice remain separate.
+The greeting deliberately does not assert that company services are healthy.
+
 ## Run the voice application
 
 1. Create a LiveKit Cloud project. Copy `.env.example` to root `.env.local`.
