@@ -47,7 +47,7 @@ class EmbodimentConfig:
         except (OSError, ValueError) as exc:
             raise ValueError("PUPPETEER_EMBODIMENT_CONFIG must be valid JSON") from exc
         if not isinstance(source, dict):
-            raise ValueError("PUPPETEER_EMBODIMENT_CONFIG must be an object")
+            raise TypeError("PUPPETEER_EMBODIMENT_CONFIG must be an object")
         if (source.get("backend") != "fake"
                 or source.get("device") not in {"reachy", "stackchan", "soarm101"}
                 or source.get("instance_id") != self.performer_id
@@ -164,7 +164,7 @@ class EmbodimentSession:
                         tool, arguments, result = await asyncio.wait_for(
                             self._queue.get(), timeout=10
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         if self._last_state is not None and not self._closed:
                             tool = "conversation_presence"
                             arguments = {"event": self._observation(self._last_state)}
@@ -187,7 +187,7 @@ class EmbodimentSession:
                             "accepted", "duplicate"
                         }:
                             logger.warning("Puppeteer presence rejected: %s", value.get("outcome"))
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - MCP transport errors may be arbitrary
                         if result is not None and not result.done():
                             result.set_exception(RuntimeError("Puppeteer call unconfirmed"))
                         else:
@@ -211,7 +211,7 @@ class EmbodimentSession:
             raise RuntimeError("Puppeteer MCP tool failed; action outcome may be unknown")
         value = response.structured_content
         if not isinstance(value, dict):
-            raise RuntimeError("Unexpected Puppeteer MCP response")
+            raise TypeError("Unexpected Puppeteer MCP response")
         return value
 
     async def _request(self, tool: str, arguments: dict) -> dict:
@@ -221,7 +221,7 @@ class EmbodimentSession:
         self._enqueue(tool, arguments, result)
         try:
             return await asyncio.wait_for(result, 15)
-        except (asyncio.TimeoutError, RuntimeError):
+        except (TimeoutError, RuntimeError):
             # Unknown outcomes remain unknown; no retry.
             return {"outcome": "failed", "reason": "outcome_unknown", "retry_safe": False}
 
@@ -256,7 +256,7 @@ class EmbodimentSession:
             self._enqueue("_close", {}, future)
             try:
                 await asyncio.wait_for(future, 5)
-            except (asyncio.TimeoutError, RuntimeError):
+            except (TimeoutError, RuntimeError):
                 logger.warning("Puppeteer disconnect confirmation unavailable")
         if not self._task.done():
             self._task.cancel()
