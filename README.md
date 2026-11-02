@@ -31,6 +31,32 @@ robot motion, or a new realtime audio engine.
    and the **development access token** only, not OpenRouter/MCP/Hermes keys.
    Start `cd web && npm install && npm run dev`; visit http://localhost:3000.
 
+For a loopback-only LiveKit development server, set both env files to
+`LIVEKIT_URL=ws://localhost:7880`, `LIVEKIT_API_KEY=devkey`, and
+`LIVEKIT_API_SECRET=secret`; start `livekit-server --dev` bound to loopback.
+Set `CONVERSATIONALIST_TURN_DETECTOR_VERSION=v1-mini` in the worker env to run
+the turn detector locally. This loads a roughly 244 MB model and uses VAD-based
+interruption handling; the default cloud setup keeps LiveKit's automatic turn
+detector and adaptive interruption selection.
+The pre-session **Microphone sensitivity** setting adjusts Silero's speech
+activation threshold: **Less sensitive** filters quieter sounds, **Standard**
+uses the existing default, and **More sensitive** detects quieter speech. It
+applies to the next conversation.
+
+Enter the development access token once. The server saves it in a 30-day
+HttpOnly, same-site cookie and automatically connects on later visits. The
+cookie is scoped to the local session API, checked with same-origin protection,
+and is never readable by page JavaScript. Clearing site cookies asks for the
+token again.
+
+During a conversation, use the **Speech model and voice** controls to switch
+OpenRouter TTS models and voices without leaving the room. The worker applies
+the change through an authenticated LiveKit RPC from the room's authorized
+participant. Prices and voice IDs come from OpenRouter's public catalog and
+refresh every five minutes; model choices are checked by both the API and the
+worker. The browser receives only catalog metadata and the LiveKit session
+token. The OpenRouter key remains in the worker environment.
+
 ## Optional lightweight agent integrations
 
 **MCP** is off by default. Enable with a *trusted*, authorized MCP URL,

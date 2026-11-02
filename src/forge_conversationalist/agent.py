@@ -7,11 +7,23 @@ transport, model client, agent memory, MCP gateway or robot is created here.
 
 from __future__ import annotations
 
+import json
 import os
+from dataclasses import replace
+from typing import Any
 
 from .assistant_tools import build_assistant_tools
-from .config import AGENT_NAME, OPENROUTER_API_BASE, CloudProfile, load_profile
+from .config import (
+    AGENT_NAME,
+    OPENROUTER_API_BASE,
+    OPENROUTER_DEFAULT_TTS,
+    OPENROUTER_TTS_VOICES,
+    VAD_SENSITIVITY_THRESHOLDS,
+    CloudProfile,
+    load_profile,
+)
 from .integrations import load_integrations
+from .speech_catalog import selected_speech_model
 
 INSTRUCTIONS = (
     "You are Forge Conversationalist, a helpful spoken assistant. "
@@ -31,6 +43,8 @@ INSTRUCTIONS = (
 def build_voice_session(
     profile: CloudProfile,
     *,
+    vad_sensitivity: str = "standard",
+    tts_sample_rate: int = 24000,
     sdk: object | None = None,
     openai_plugin: object | None = None,
     openrouter_key: str | None = None,
@@ -50,7 +64,12 @@ def build_voice_session(
     if profile.requires_openrouter and openai_plugin is None:
         from livekit.plugins import openai as openai_plugin
 
+    if vad_sensitivity not in VAD_SENSITIVITY_THRESHOLDS:
+        raise ValueError("vad_sensitivity must be less, standard, or more")
+
     from livekit.plugins import silero
+
+    local_turn_model = os.getenv("CONVERSATIONALIST_TURN_DETECTOR_VERSION") == "v1-mini"
 
     stt = (
         sdk.inference.STT(model=profile.stt_model, language=profile.stt_language)
@@ -72,52 +91,245 @@ def build_voice_session(
             base_url=OPENROUTER_API_BASE,
         )
     )
-    tts = (
-        sdk.inference.TTS(model=profile.tts_model, voice=profile.tts_voice)
-        if profile.tts_provider == "livekit"
-        else openai_plugin.TTS(
-            model=profile.tts_model,
-            voice=profile.tts_voice,
-            base_url=OPENROUTER_API_BASE,
-            api_key=api_key,
-            response_format=profile.tts_response_format,
-        )
+    tts = _build_tts(profile, api_key=api_key, openai_plugin=openai_plugin,
+                     tts_sample_rate=tts_sample_rate, sdk=sdk)
+    turn_handling = {
+        "turn_detection": _build_turn_detector(sdk),
+    }
+    if local_turn_model:
+        # Adaptive interruption uses a separate LiveKit cloud endpoint.
+        # Keep local runs fully on-device with the standard VAD strategy.
+        turn_handling["interruption"] = {"mode": "vad"}
+
+    threshold = VAD_SENSITIVITY_THRESHOLDS[vad_sensitivity]
+    vad = silero.VAD.load(
+        **({"activation_threshold": threshold} if threshold is not None else {})
     )
+
     return sdk.AgentSession(
         stt=stt,
         llm=llm,
         tts=tts,
-        vad=silero.VAD.load(),
-        turn_handling=sdk.TurnHandlingOptions(turn_detection=sdk.inference.TurnDetector()),
+        vad=vad,
+        turn_handling=sdk.TurnHandlingOptions(**turn_handling),
+    )
+
+
+def _build_tts(
+    profile: CloudProfile,
+    *,
+    api_key: str | None = None,
+    openai_plugin: object | None = None,
+    tts_sample_rate: int = 24000,
+    sdk: object | None = None,
+) -> object:
+    """Build the selected provider TTS for startup or a live voice swap."""
+    if profile.tts_provider == "livekit":
+        if sdk is None:
+            from livekit import agents as sdk
+        return sdk.inference.TTS(model=profile.tts_model, voice=profile.tts_voice)
+    key = api_key if api_key is not None else os.getenv("OPENROUTER_API_KEY")
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
+    if openai_plugin is None:
+        from livekit.plugins import openai as openai_plugin
+    kwargs = {
+        "model": profile.tts_model,
+        "voice": profile.tts_voice,
+        "base_url": OPENROUTER_API_BASE,
+        "api_key": key,
+        "response_format": profile.tts_response_format,
+    }
+    if tts_sample_rate != 24000:
+        kwargs["sample_rate"] = tts_sample_rate
+    return openai_plugin.TTS(**kwargs)
+
+
+def _build_turn_detector(sdk: object) -> object:
+    """Build LiveKit's default detector or an explicitly selected version."""
+    version = os.getenv("CONVERSATIONALIST_TURN_DETECTOR_VERSION")
+    if version is None:
+        return sdk.inference.TurnDetector()
+    if version not in {"v1", "v1-mini"}:
+        raise ValueError("CONVERSATIONALIST_TURN_DETECTOR_VERSION must be v1 or v1-mini")
+    return sdk.inference.TurnDetector(version=version)
+
+
+async def entrypoint(ctx: object) -> None:
+    """Create a room session from worker environment.
+
+    This must stay module-level: LiveKit's Linux process executor pickles
+    the entrypoint before dispatching a job to its worker process.
+    """
+    from livekit.agents import Agent
+
+    metadata = getattr(ctx.job, "metadata", "")
+    profile = load_profile()
+    requested_model = _requested_speech_model(metadata)
+    selected_model = None
+    if requested_model is not None:
+        selected_model = selected_speech_model(requested_model[0], requested_model[1])
+        if selected_model is None:
+            raise ValueError("Requested speech model or voice is not in the current OpenRouter catalog")
+        profile = replace(
+            profile,
+            tts_provider="openrouter",
+            tts_model=selected_model["id"],
+            tts_voice=requested_model[1],
+            tts_response_format=selected_model["responseFormat"],
+        )
+    else:
+        profile = _profile_for_job(profile, metadata)
+    vad_sensitivity = _requested_vad_sensitivity(metadata)
+    integrations = load_integrations()
+    session = build_voice_session(
+        profile,
+        vad_sensitivity=vad_sensitivity,
+        tts_sample_rate=selected_model["sampleRate"] if selected_model else 24000,
+    )
+    agent = Agent(
+        instructions=INSTRUCTIONS,
+        tools=build_assistant_tools(integrations),
+    )
+    await session.start(room=ctx.room, agent=agent)
+    authorized_identity = _authorized_identity(metadata)
+    if authorized_identity:
+        _register_voice_rpc(
+            ctx.room.local_participant,
+            caller_identity=authorized_identity,
+            agent=agent,
+            base_profile=load_profile(),
+        )
+    # A fixed greeting needs TTS only. Asking the LLM to generate it with only
+    # system instructions fails on providers that require a user query and
+    # creates an unnecessary model request.
+    await session.say("Hello! I'm here to help.")
+
+
+def _authorized_identity(metadata: str) -> str | None:
+    if not metadata:
+        return None
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    identity = request.get("authorized_identity") if isinstance(request, dict) else None
+    return identity if isinstance(identity, str) and identity else None
+
+
+def _register_voice_rpc(
+    local_participant: object,
+    *,
+    caller_identity: str,
+    agent: object,
+    base_profile: CloudProfile,
+) -> None:
+    """Expose voice switching only to the user identity signed into this room."""
+    from livekit import rtc
+
+    async def change_voice(data: object) -> str:
+        if getattr(data, "caller_identity", None) != caller_identity:
+            raise rtc.RpcError(
+                code=rtc.RpcError.ErrorCode.APPLICATION_ERROR,
+                message="Only the authorized room participant can change speech settings",
+            )
+        try:
+            requested = json.loads(data.payload)
+        except (TypeError, json.JSONDecodeError):
+            raise rtc.RpcError(code=rtc.RpcError.ErrorCode.APPLICATION_ERROR, message="Invalid settings")
+        if not isinstance(requested, dict):
+            raise rtc.RpcError(code=rtc.RpcError.ErrorCode.APPLICATION_ERROR, message="Invalid settings")
+
+        model_id = requested.get("tts_model")
+        voice = requested.get("tts_voice")
+        sample_rate = 24000
+        if model_id is None and voice is None:
+            profile = base_profile
+        else:
+            selected = selected_speech_model(model_id, voice)
+            if selected is None:
+                raise rtc.RpcError(code=rtc.RpcError.ErrorCode.APPLICATION_ERROR, message="Unsupported speech model or voice")
+            profile = replace(
+                base_profile,
+                tts_provider="openrouter",
+                tts_model=selected["id"],
+                tts_voice=voice,
+                tts_response_format=selected["responseFormat"],
+            )
+            sample_rate = selected["sampleRate"]
+        tts = _build_tts(profile, tts_sample_rate=sample_rate)
+        agent.update_options(tts=tts)
+        return json.dumps({"model": profile.tts_model, "voice": profile.tts_voice})
+
+    local_participant.register_rpc_method("forge.change_speech", change_voice)
+
+
+def _requested_speech_model(metadata: str) -> tuple[Any, Any] | None:
+    """Read the per-session TTS choice; full allowlist validation is separate."""
+    if not metadata:
+        return None
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(request, dict) or "tts_model" not in request:
+        return None
+    return request.get("tts_model"), request.get("tts_voice")
+
+
+def _requested_qwen_voice(metadata: str) -> str | None:
+    """Read only an allowlisted voice from server-authored job metadata."""
+    if not metadata:
+        return None
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    voice = request.get("tts_voice") if isinstance(request, dict) else None
+    return voice if isinstance(voice, str) and voice in OPENROUTER_TTS_VOICES else None
+
+
+def _profile_for_job(profile: CloudProfile, metadata: str) -> CloudProfile:
+    """Apply a requested voice only to the OpenRouter Qwen TTS profile."""
+    voice = _requested_qwen_voice(metadata)
+    if (
+        voice is not None
+        and profile.tts_provider == "openrouter"
+        and profile.tts_model == OPENROUTER_DEFAULT_TTS
+    ):
+        return replace(profile, tts_voice=voice)
+    return profile
+
+
+def _requested_vad_sensitivity(metadata: str) -> str:
+    """Read only a supported VAD preset from server-authored job metadata."""
+    if not metadata:
+        return "standard"
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return "standard"
+    sensitivity = request.get("vad_sensitivity") if isinstance(request, dict) else None
+    return (
+        sensitivity
+        if isinstance(sensitivity, str) and sensitivity in VAD_SENSITIVITY_THRESHOLDS
+        else "standard"
     )
 
 
 def main() -> None:
     from dotenv import load_dotenv
     from livekit import agents
-    from livekit.agents import Agent, AgentServer
+    from livekit.agents import AgentServer
 
     load_dotenv(".env.local")
     profile = load_profile()
-    integrations = load_integrations()
+    load_integrations()
     if profile.requires_openrouter and not os.getenv("OPENROUTER_API_KEY"):
         raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
     server = AgentServer()
 
-    class Conversationalist(Agent):
-        def __init__(self) -> None:
-            super().__init__(
-                instructions=INSTRUCTIONS,
-                tools=build_assistant_tools(integrations),
-            )
-
-    @server.rtc_session(agent_name=AGENT_NAME)
-    async def entrypoint(ctx: agents.JobContext) -> None:
-        session = build_voice_session(profile)
-        await session.start(room=ctx.room, agent=Conversationalist())
-        await session.generate_reply(
-            instructions="Greet the person briefly and invite them to speak."
-        )
+    server.rtc_session(agent_name=AGENT_NAME)(entrypoint)
 
     agents.cli.run_app(server)
 
