@@ -103,6 +103,12 @@ performer arbitration handle gaps and denied events. An unavailable
 device is visible independently; the worker must not claim all three
 physically followed a cue.
 
+When a user-speaking callback arrives while the hook still reports the
+agent as speaking, the listening event is marked interrupted so Puppeteer
+uses its immediate interruption path. Callback ordering can prevent this
+overlap from being observed; it is not a measured audio interruption or
+evidence that a physical STOP has completed.
+
 The LLM may read `get_ensemble_status`; it can use
 `request_ensemble_gesture` **only if the user explicitly asks for**
 one of `yes`, `no`, `acknowledge`, `neutral`. Ordinary

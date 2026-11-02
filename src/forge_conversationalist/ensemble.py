@@ -131,14 +131,14 @@ class EnsembleSession:
             if future is not None and not future.done():
                 future.set_exception(RuntimeError("Puppeteer ensemble queue overflow"))
 
-    def observe(self, state: Literal["idle", "listening", "speaking"]) -> None:
+    def observe(self, state: Literal["idle", "listening", "speaking"], *, interrupted: bool = False) -> None:
         """Nonblocking LiveKit state hook, not measured voice playback time."""
         if state not in STATES:
             raise ValueError("invalid ensemble presence")
         if self._closed or self._task is None or self._task.done():
             return
         self._last_state = state
-        self._enqueue("ensemble_presence", self._presence(state))
+        self._enqueue("ensemble_presence", self._presence(state, interrupted=interrupted))
 
     async def start(self) -> dict:
         if self._task is not None:

@@ -251,7 +251,7 @@ async def entrypoint(ctx: object) -> None:
         if embodiment is not None:
             embodiment.observe(signal.state)
         if ensemble is not None:
-            ensemble.observe(signal.state)
+            ensemble.observe(signal.state, interrupted=signal.interrupted)
 
     install_session_state_hook(session, handle_state)
     agent = Agent(
