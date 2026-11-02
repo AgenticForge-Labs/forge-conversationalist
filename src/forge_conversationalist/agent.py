@@ -24,8 +24,8 @@ from .config import (
     CloudProfile,
     load_profile,
 )
-from .integrations import load_integrations
 from .embodiment import EmbodimentSession
+from .integrations import load_integrations
 from .speech_catalog import selected_speech_model
 from .text_hook import install_assistant_text_hook, install_session_state_hook
 from .transcript_rpc import register_transcript_rpc
