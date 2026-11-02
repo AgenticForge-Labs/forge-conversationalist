@@ -218,9 +218,14 @@ class EmbodimentSession:
     async def _call(session, tool: str, arguments: dict) -> dict:
         response = await session.call_tool(tool, arguments)
         if response.is_error:
+            logger.warning("Puppeteer MCP tool returned error: %s", tool)
             raise RuntimeError("Puppeteer MCP tool failed; action outcome may be unknown")
         value = response.structured_content
         if not isinstance(value, dict):
+            logger.warning(
+                "Puppeteer MCP tool returned non-object structured content: %s, %s",
+                tool, type(value).__name__,
+            )
             raise TypeError("Unexpected Puppeteer MCP response")
         return value
 
