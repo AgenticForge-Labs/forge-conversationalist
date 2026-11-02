@@ -1,16 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
-import { timingSafeEqual } from "node:crypto";
-import { randomUUID } from "node:crypto";
-import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
-import { AccessToken } from "livekit-server-sdk";
+import { timingSafeEqual, randomUUID } from "node:crypto";
+import { ParticipantInfo_Kind, RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
+import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { fetchAffordableSpeechModels } from "@/lib/openrouter-tts";
+import { decodeSessionBinding, encodeSessionBinding } from "@/lib/session-binding.mjs";
 
 export const runtime = "nodejs";
 
 const AGENT_NAME = "forge-conversationalist";
 const VAD_SENSITIVITIES = ["less", "standard", "more"] as const;
 const ACCESS_COOKIE = "forge_conversationalist_access";
+const SESSION_COOKIE = "forge_conversationalist_session";
 const ACCESS_COOKIE_AGE = 60 * 60 * 24 * 30;
+
+function liveKitHost(url: string): string {
+  return url.startsWith("wss://") ? `https://${url.slice(6)}` : `http://${url.slice(5)}`;
+}
+
+function cookieOptions(request: NextRequest) {
+  return {
+    httpOnly: true,
+    sameSite: "strict" as const,
+    secure: request.nextUrl.protocol === "https:",
+    path: "/api/session",
+    maxAge: ACCESS_COOKIE_AGE,
+  };
+}
 
 function authorized(received: string, configured: string): boolean {
   const left = Buffer.from(received, "utf8");
@@ -110,13 +125,41 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unsupported VAD sensitivity" }, { status: 400 });
   }
 
-  // Never accept arbitrary room/identity/agent values supplied by the browser.
-  const roomName = `conversationalist-${randomUUID()}`;
-  const identity = `person-${randomUUID()}`;
-  const accessToken = new AccessToken(key, secret, { identity, ttl: "15m" });
+  // The signed HttpOnly cookie binds an authenticated browser to its existing
+  // room and identity. The browser never supplies a room or identity itself.
+  const liveKit = new RoomServiceClient(liveKitHost(url), key, secret);
+  const binding = cookieAuthorized
+    ? decodeSessionBinding(request.cookies.get(SESSION_COOKIE)?.value ?? "", configured)
+    : undefined;
+  let roomName = binding?.roomName;
+  let identity = binding?.identity;
+  let resumeExistingRoom = false;
+  if (roomName && identity) {
+    try {
+      resumeExistingRoom = (await liveKit.listRooms([roomName])).some((room) => room.name === roomName);
+      if (resumeExistingRoom) {
+        const participants = await liveKit.listParticipants(roomName);
+        if (!participants.some((participant) => participant.kind === ParticipantInfo_Kind.AGENT)) {
+          return NextResponse.json(
+            { error: "The agent is no longer connected. End this conversation and start a new one." },
+            { status: 503, headers: { "Cache-Control": "no-store" } },
+          );
+        }
+      }
+    } catch {
+      return NextResponse.json({ error: "Unable to check the existing conversation" }, { status: 503 });
+    }
+  }
+  if (!resumeExistingRoom) {
+    roomName = `conversationalist-${randomUUID()}`;
+    identity = `person-${randomUUID()}`;
+  }
+  const sessionRoom = roomName!;
+  const sessionIdentity = identity!;
+  const accessToken = new AccessToken(key, secret, { identity: sessionIdentity, ttl: "15m" });
   accessToken.addGrant({
     roomJoin: true,
-    room: roomName,
+    room: sessionRoom,
     canPublish: true,
     canSubscribe: true,
     canPublishData: true,
@@ -125,28 +168,67 @@ export async function POST(request: NextRequest) {
     ...(requestedSpeechModel ? { tts_model: requestedSpeechModel.id } : {}),
     ...(requestedVoice ? { tts_voice: requestedVoice } : {}),
     ...(requestedVadSensitivity ? { vad_sensitivity: requestedVadSensitivity } : {}),
-    authorized_identity: identity,
+    authorized_identity: sessionIdentity,
   };
-  accessToken.roomConfig = new RoomConfiguration({
-    agents: [new RoomAgentDispatch({
-      agentName: AGENT_NAME,
-      metadata: JSON.stringify(dispatchMetadata),
-    })],
-  });
+  if (!resumeExistingRoom) {
+    accessToken.roomConfig = new RoomConfiguration({
+      agents: [new RoomAgentDispatch({
+        agentName: AGENT_NAME,
+        metadata: JSON.stringify(dispatchMetadata),
+      })],
+    });
+  }
 
   const token = await accessToken.toJwt();
   const response = NextResponse.json(
-    { token, roomName, serverUrl: url },
+    { token, roomName: sessionRoom, serverUrl: url, resumed: resumeExistingRoom },
     { headers: { "Cache-Control": "no-store" } },
   );
   if (bearerAuthorized) {
-    response.cookies.set(ACCESS_COOKIE, configured, {
-      httpOnly: true,
-      sameSite: "strict",
-      secure: request.nextUrl.protocol === "https:",
-      path: "/api/session",
-      maxAge: ACCESS_COOKIE_AGE,
-    });
+    response.cookies.set(ACCESS_COOKIE, configured, cookieOptions(request));
   }
+  response.cookies.set(SESSION_COOKIE, encodeSessionBinding({ roomName: sessionRoom, identity: sessionIdentity }, configured), cookieOptions(request));
+  return response;
+}
+
+export async function DELETE(request: NextRequest) {
+  const configured = process.env.CONVERSATIONALIST_ACCESS_TOKEN;
+  const key = process.env.LIVEKIT_API_KEY;
+  const secret = process.env.LIVEKIT_API_SECRET;
+  const url = process.env.LIVEKIT_URL;
+  if (!configured || configured.length < 32 || !key || !secret || !url) {
+    return NextResponse.json({ error: "Server is not configured" }, { status: 503 });
+  }
+  const bearer = request.headers.get("authorization") ?? "";
+  const bearerAuthorized = bearer.startsWith("Bearer ") && authorized(bearer.slice(7), configured);
+  const cookieAuthorized = requestHasValidCookie(request, configured);
+  if (!bearerAuthorized && !cookieAuthorized) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const requestOrigin = request.headers.get("origin");
+  const expectedOrigin = `${request.nextUrl.protocol}//${request.headers.get("host") ?? ""}`;
+  if (cookieAuthorized && !bearerAuthorized && requestOrigin !== expectedOrigin) {
+    return NextResponse.json({ error: "Cross-origin request denied" }, { status: 403 });
+  }
+  const binding = decodeSessionBinding(request.cookies.get(SESSION_COOKIE)?.value ?? "", configured);
+  if (binding) {
+    try {
+      const liveKit = new RoomServiceClient(liveKitHost(url), key, secret);
+      const exists = (await liveKit.listRooms([binding.roomName])).some((room) => room.name === binding.roomName);
+      if (exists) {
+        try {
+          await liveKit.deleteRoom(binding.roomName);
+        } catch {
+          // A concurrent End or worker cleanup may have deleted it already.
+          const remains = (await liveKit.listRooms([binding.roomName])).some((room) => room.name === binding.roomName);
+          if (remains) throw new Error("Room deletion failed");
+        }
+      }
+    } catch {
+      return NextResponse.json({ error: "Unable to end the conversation" }, { status: 503 });
+    }
+  }
+  const response = NextResponse.json({ ended: true }, { headers: { "Cache-Control": "no-store" } });
+  response.cookies.set(SESSION_COOKIE, "", { ...cookieOptions(request), maxAge: 0 });
   return response;
 }
