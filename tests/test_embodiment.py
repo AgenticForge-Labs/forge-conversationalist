@@ -17,10 +17,10 @@ GRANTS = [
 ]
 
 
-def profile(tmp_path: Path, device: str, **overrides) -> Path:
-    path = tmp_path / f"{device}.json"
+def profile(tmp_path: Path, robot_kind: str, **overrides) -> Path:
+    path = tmp_path / f"{robot_kind}.json"
     data = {
-        "backend": "fake", "device": device, "instance_id": f"{device}-sim",
+        "backend": "fake", "device": robot_kind, "instance_id": f"{robot_kind}-sim",
         "allowed_tools": GRANTS,
         "assets": ["emotion:curious", "dance:hello", "gesture:wave"],
     }
@@ -87,7 +87,7 @@ def test_embodiment_tool_wrapper_uses_same_room_client(tmp_path):
             "emotion", "curious", "sha256:fixture"
         ))["name"] == "curious"
         assert json.loads(await tools["check_performer_action"]("a1"))["state"] == "queued"
-    asyncio.run(run)
+    asyncio.run(run())
 
 
 @pytest.mark.anyio
