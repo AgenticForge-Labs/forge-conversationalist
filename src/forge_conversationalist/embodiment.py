@@ -34,7 +34,8 @@ class EmbodimentConfig:
     command: str = "forge-puppeteer-mcp"
 
     def __post_init__(self) -> None:
-        if not self.config_path.is_absolute() or not self.config_path.is_file():
+        if (not isinstance(self.performer_id, str) or not self.performer_id
+                or not self.config_path.is_absolute() or not self.config_path.is_file()):
             raise ValueError("PUPPETEER_EMBODIMENT_CONFIG must be an existing absolute file")
         if self.command != "forge-puppeteer-mcp":
             executable = Path(self.command)
@@ -54,8 +55,10 @@ class EmbodimentConfig:
                 or source.get("simulation_only") is True):
             raise ValueError("Embodiment reference integration requires a fake-only profile")
         grants = source.get("allowed_tools")
-        if (not isinstance(grants, list) or set(grants) !=
-                REQUIRED_TOOLS | {"device_info"} or len(grants) != len(set(grants))):
+        if (not isinstance(grants, list)
+                or any(not isinstance(name, str) for name in grants)
+                or set(grants) != REQUIRED_TOOLS | {"device_info"}
+                or len(grants) != len(set(grants))):
             raise ValueError("Embodiment reference requires exact fake-only tool grants")
 
 
@@ -129,17 +132,16 @@ class EmbodimentSession:
             raise
 
     async def _serve(self) -> None:
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-
-        # The MCP library provides a restricted child process environment;
-        # never forward this worker's LLM, Hermes or LiveKit secrets.
-        params = StdioServerParameters(
-            command=self.config.command,
-            args=["--config", str(self.config.config_path)],
-            env={},
-        )
         try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+
+            # Do not forward the voice worker's LLM, Hermes or LiveKit secrets.
+            params = StdioServerParameters(
+                command=self.config.command,
+                args=["--config", str(self.config.config_path)],
+                env={},
+            )
             async with (
                 stdio_client(params) as (reader, writer),
                 ClientSession(reader, writer) as session,
