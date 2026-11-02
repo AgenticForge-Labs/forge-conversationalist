@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .embodiment import EmbodimentSession
+    from .ensemble import EnsembleSession
 
 from .hermes import HermesRunsClient, HermesUnavailable
 from .integrations import Integrations
@@ -44,6 +45,7 @@ def build_assistant_tools(
     mcp_module: object | None = None,
     function_tool_factory: object | None = None,
     embodiment_session: EmbodimentSession | None = None,
+    ensemble_session: EnsembleSession | None = None,
 ) -> list[object]:
     """Construct tools for one room; no integrations means an empty list."""
     tools: list[object] = []
@@ -101,6 +103,36 @@ def build_assistant_tools(
                                   description="Request one exact simulated emotion, dance or gesture. No random fallback or hardware motion."),
             function_tool_factory(check_performer_action, name="check_performer_action",
                                   description="Read confirmed status of a previous performer expression action ID."),
+        ])
+
+    if integrations.ensemble is not None and ensemble_session is not None:
+        if function_tool_factory is None:
+            from livekit.agents import function_tool as function_tool_factory
+
+        async def get_ensemble_status() -> str:
+            """Read Puppeteer's observed room/performer states; no physical success inferred."""
+            return json.dumps(await ensemble_session.status())
+
+        async def request_ensemble_gesture(name: str) -> str:
+            """Request a finite approved yes/no/acknowledge/neutral gesture across the room.
+
+            Only when a person explicitly requests a physical gesture. Never
+            infer success from accepted admission; no automatic retry.
+            """
+            return json.dumps(await ensemble_session.express(name))
+
+        tools.extend([
+            function_tool_factory(
+                get_ensemble_status, name="get_ensemble_status",
+                description="Read three-performer Puppeteer status and individual device evidence.",
+            ),
+            function_tool_factory(
+                request_ensemble_gesture, name="request_ensemble_gesture",
+                description=(
+                    "On an explicit user request, request one approved yes/no/acknowledge/neutral "
+                    "gesture for the three performers. Admission is not physical completion."
+                ),
+            ),
         ])
 
     if integrations.hermes is not None:
