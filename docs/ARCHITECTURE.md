@@ -46,6 +46,21 @@ a duplicate agent runtime or takeover of an existing CLI/TUI session.
 Secrets never enter browser code. No status cue or LLM prompt can
 authorize an action against a company account or physical device.
 
+## Native three-performer voice bridge (PR #9)
+
+The optional `EnsembleSession` is a single room-owned MCP stdio client
+that consumes approximate LiveKit state callbacks. It sends only ordered
+content-free idle/listening/speaking states and an explicitly requested
+bounded named gesture; it never processes audio, speaks through a robot
+speaker, or opens an SDK device directly. Puppeteer owns approved recorded
+and procedural expression, scheduling, resource arbitration and hardware
+STOP/HOLD. It uses a separate operator-reviewed config and is mutually
+exclusive with the existing fake embodiment and restricted Reachy clients
+to prevent conflicting controllers. An authorized LiveKit room and stable
+signed identity are required before the native SDK child starts.
+See [Native Ensemble](NATIVE_ENSEMBLE.md). 4G persona migration and
+physical output timing are still separate acceptance work.
+
 ## Deferred
 A Platform-owned authenticated communication feed, scoped event fanout,
 room-origin filtering, alert preferences, privacy policy,
