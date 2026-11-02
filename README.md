@@ -66,6 +66,19 @@ cookie is scoped to the local session API, checked with same-origin protection,
 and is never readable by page JavaScript. Clearing site cookies asks for the
 token again.
 
+For a trusted workstation where anyone able to use the local browser may
+start a conversation, local development can sign in automatically. Start the
+web server **bound only to loopback**, with the flag set on that process:
+
+```bash
+CONVERSATIONALIST_LOCAL_AUTO_LOGIN=true npm run dev -- --hostname 127.0.0.1
+```
+
+Then open `http://localhost:3000`. This opt-in works only in development
+for same-origin localhost requests. It bypasses the access-token prompt for
+local users; never expose this server on a network or enable the flag on a
+shared or untrusted workstation. LiveKit credentials stay on the server.
+
 The OpenRouter preset defaults to HeyGen Voice Turbo with the `lucian` voice,
 using mono PCM at 44.1 kHz. The model and voice can still be changed per room.
 Closing the browser leaves the agent and its conversation in memory; reopening
