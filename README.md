@@ -8,7 +8,7 @@ profiles plus optional authenticated MCP and Hermes delegation.
 Local OpenRouter/LiveKit voice acceptance has been exercised; hardware
 integration requires separate attended acceptance.
 
-PR #3 adds device-independent presentation signals and optional browser
+PR #3 merged device-independent presentation signals and optional browser
 microphone/speaker selection. It does **not** add a Platform subscription,
 robot motion, or a new realtime audio engine.
 
