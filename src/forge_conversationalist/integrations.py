@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .embodiment import EmbodimentConfig
+from .ensemble import PuppeteerEnsembleConfig
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _TRUE = {"true", "1", "yes"}
@@ -178,6 +179,7 @@ class Integrations:
     mcp: MCPConfig | None = None
     puppeteer_stdio: PuppeteerStdioConfig | None = None
     embodiment: EmbodimentConfig | None = None
+    ensemble: PuppeteerEnsembleConfig | None = None
     hermes: HermesConfig | None = None
 
 
@@ -222,6 +224,18 @@ def load_integrations(env: dict[str, str] | None = None) -> Integrations:
     elif embodiment_command != "forge-puppeteer-mcp":
         raise ValueError("PUPPETEER_EMBODIMENT_CONFIG is required with its command")
 
+    ensemble_path = e.get("PUPPETEER_ENSEMBLE_CONFIG", "").strip()
+    ensemble_command = e.get("PUPPETEER_ENSEMBLE_COMMAND", "").strip() or "forge-puppeteer-ensemble"
+    ensemble = None
+    if ensemble_path:
+        if puppeteer_stdio is not None or embodiment is not None:
+            raise ValueError(
+                "A room cannot start the native ensemble alongside another Puppeteer controller"
+            )
+        ensemble = PuppeteerEnsembleConfig(Path(ensemble_path), command=ensemble_command)
+    elif ensemble_command != "forge-puppeteer-ensemble":
+        raise ValueError("PUPPETEER_ENSEMBLE_CONFIG is required with its command")
+
     hermes_enabled = _enabled(e.get("HERMES_DELEGATION_ENABLED", "false"), "HERMES_DELEGATION_ENABLED")
     hermes = None
     if hermes_enabled:
@@ -230,4 +244,4 @@ def load_integrations(env: dict[str, str] | None = None) -> Integrations:
             key=e.get("HERMES_API_KEY", ""),
         )
     return Integrations(mcp=mcp, puppeteer_stdio=puppeteer_stdio,
-                        embodiment=embodiment, hermes=hermes)
+                        embodiment=embodiment, ensemble=ensemble, hermes=hermes)
