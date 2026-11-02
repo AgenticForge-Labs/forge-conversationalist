@@ -132,6 +132,7 @@ class EmbodimentSession:
             raise
 
     async def _serve(self) -> None:
+        phase = "import"
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
@@ -142,20 +143,25 @@ class EmbodimentSession:
                 args=["--config", str(self.config.config_path)],
                 env={},
             )
+            phase = "launch"
             async with (
                 stdio_client(params) as (reader, writer),
                 ClientSession(reader, writer) as session,
             ):
+                phase = "initialize"
                 await session.initialize()
+                phase = "discover_tools"
                 discovered = {tool.name for tool in (await session.list_tools()).tools}
                 if not REQUIRED_TOOLS <= discovered:
                     raise RuntimeError("Puppeteer embodiment contract tools unavailable")
+                phase = "performer_discover"
                 catalog = await self._call(session, "performer_discover", {})
                 if (catalog.get("schema") != SCHEMA
                         or catalog.get("execution_mode") != "fake"
                         or catalog.get("performer_id") != self.config.performer_id
                         or catalog.get("physical_qualification") != "not_qualified"):
                     raise RuntimeError("Puppeteer returned incompatible embodiment")
+                phase = "room_events"
                 self._catalog = catalog
                 if self._ready is not None and not self._ready.done():
                     self._ready.set_result(catalog)
@@ -202,7 +208,10 @@ class EmbodimentSession:
                     result.set_exception(RuntimeError("Puppeteer embodiment disconnected"))
             if isinstance(exc, asyncio.CancelledError):
                 raise
-            logger.warning("Puppeteer embodiment connection ended: %s", type(exc).__name__)
+            logger.warning(
+                "Puppeteer embodiment connection ended in %s: %s",
+                phase, type(exc).__name__,
+            )
 
     @staticmethod
     async def _call(session, tool: str, arguments: dict) -> dict:
