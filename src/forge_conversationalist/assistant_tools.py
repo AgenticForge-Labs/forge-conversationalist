@@ -11,6 +11,26 @@ from .hermes import HermesRunsClient, HermesUnavailable
 from .integrations import Integrations
 
 
+def _restricted_mcp_toolset(mcp_module: object, server: object, allowed: tuple[str, ...]):
+    """Create a toolset that filters after discovery and before agent exposure."""
+    parent = mcp_module.MCPToolset
+
+    class RestrictedMCPToolset(parent):
+        async def setup(self, *, reload: bool = False):
+            await super().setup(reload=reload)
+            # Current LiveKit wraps these tools in RawFunctionTool, while its
+            # filter_tools helper checks for MCPTool. Unknown wrappers are
+            # excluded fail-closed instead of losing the allowlist.
+            self._tools = [
+                tool for tool in self._tools
+                if getattr(tool, "name", None) in allowed
+                or getattr(getattr(tool, "_info", None), "name", None) in allowed
+            ]
+            return self
+
+    return RestrictedMCPToolset(id="approved-puppeteer", mcp_server=server)
+
+
 def build_assistant_tools(
     integrations: Integrations,
     *,
@@ -32,6 +52,19 @@ def build_assistant_tools(
             allowed_tools=list(conf.allowed_tools),
         )
         tools.append(mcp_module.MCPToolset(id="approved-mcp", mcp_server=server))
+
+    if integrations.puppeteer_stdio is not None:
+        if mcp_module is None:
+            from livekit.agents import mcp as mcp_module
+        conf = integrations.puppeteer_stdio
+        # The SDK's default child environment inherits only HOME, LOGNAME, PATH,
+        # SHELL, TERM and USER. Never forward this worker's provider credentials.
+        server = mcp_module.MCPServerStdio(
+            command=conf.command,
+            args=["--config", str(conf.config_path)],
+            env={},
+        )
+        tools.append(_restricted_mcp_toolset(mcp_module, server, conf.allowed_tools))
 
     if integrations.hermes is not None:
         if function_tool_factory is None:

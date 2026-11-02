@@ -21,6 +21,7 @@ from forge_conversationalist.config import (
     CloudProfile,
     load_profile,
 )
+from forge_conversationalist.integrations import Integrations
 
 
 def test_job_entrypoint_is_importable_and_picklable() -> None:
@@ -34,7 +35,7 @@ def test_entrypoint_uses_tts_only_greeting_without_an_llm_request() -> None:
     )
     with (
         patch("forge_conversationalist.agent.load_profile", return_value=CloudProfile()),
-        patch("forge_conversationalist.agent.load_integrations", return_value=None),
+        patch("forge_conversationalist.agent.load_integrations", return_value=Integrations()),
         patch("forge_conversationalist.agent.build_voice_session", return_value=session),
         patch("forge_conversationalist.agent.build_assistant_tools", return_value=[]),
     ):

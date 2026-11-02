@@ -96,6 +96,61 @@ as *started*. Later say \"Check that Hermes task\" to invoke
 There is no automatic task-completion announcement yet, no approval-by-
 voice, and this does not attach to your existing TUI/CLI Hermes session.
 
+### Optional restricted Reachy expression gateway
+
+The Puppeteer stdio gateway is separately opt-in. Conversationalist starts
+the installed `forge-puppeteer-mcp` launcher with an operator-owned config
+file and exposes only explicitly selected `play_move`, `list_assets`,
+`action_lookup`, and `device_stop` tools. All four are required. Each room's
+stdio process must use the same shared `ownership_db` and `action_journal`
+paths so Puppeteer can serialize actions and retain uncertain outcomes across
+sessions. Puppeteer filters asset discovery to the exact operator-approved pins.
+The gateway config must select
+Reachy SDK restricted mode, declare physical authority, and pin at least one
+approved asset ID and full-snapshot revision. Reachy pose and antenna targets
+are rejected by this integration. The agent instructions require an explicit
+user request before a move; it will not move automatically while greeting,
+listening, speaking, or idle. Puppeteer's server-side asset and authority
+checks remain authoritative.
+
+```bash
+PUPPETEER_MCP_CONFIG=/absolute/path/to/reachy-approved-moves.json
+PUPPETEER_MCP_COMMAND=/absolute/path/to/forge-puppeteer-mcp
+PUPPETEER_MCP_ALLOWED_TOOLS=play_move,list_assets,action_lookup,device_stop
+```
+
+`PUPPETEER_MCP_COMMAND` is optional when the launcher is on the worker's
+`PATH`. For an isolated Puppeteer environment, set it to the absolute
+executable path; Conversationalist verifies the executable bit and requires
+the basename `forge-puppeteer-mcp`. For example, this workstation's separate
+Puppeteer environment can use
+`/home/larry/.local/share/forge-puppeteer/reachy-venv/bin/forge-puppeteer-mcp`.
+
+The JSON file is configured by the operator in Forge Puppeteer. This example
+is intentionally incomplete and will not connect:
+
+```json
+{
+  "backend": "reachy_sdk",
+  "device": "reachy",
+  "physical_authority": "I_AUTHORIZE_REACHY_CONTROL",
+  "restricted_actions": true,
+  "allowed_tools": ["device_info", "device_state", "list_assets", "action_lookup", "play_move", "device_stop"],
+  "ownership_db": "/var/lib/forge-puppeteer/reachy/ownership.sqlite3",
+  "action_journal": "/var/lib/forge-puppeteer/reachy/actions.sqlite3",
+  "approved_moves": [
+    {"asset_id": "reachy/APPROVED_ASSET", "revision": "sha256:REPLACE_WITH_64_LOWERCASE_HEX_DIGITS"}
+  ]
+}
+```
+
+The config path must be absolute, the approved revision must match the staged
+asset, and the gateway needs its own valid Reachy SDK deployment settings.
+The MCP child receives no OpenRouter or Hermes credentials; the MCP SDK only
+inherits its small system-safe environment set. No device is contacted until a
+conversation starts and the configured restricted toolset initializes. This
+is not a live hardware qualification.
+
 With no integrations configured, Conversationalist has no extra tools
 and simply responds as a cloud voice assistant.
 

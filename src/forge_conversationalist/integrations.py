@@ -7,14 +7,23 @@ Hermes runs are API-owned; they never impersonate CLI/TUI sessions.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlsplit
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _TRUE = {"true", "1", "yes"}
 _FALSE = {"false", "0", "no", ""}
+_REACHY_REVISION = re.compile(r"^sha256:[0-9a-f]{64}$")
+_RESTRICTED_REACHY_TOOLS = {
+    "play_move", "device_info", "device_state", "list_assets", "action_lookup", "device_stop"
+}
+_CONVERSATION_REACHY_TOOLS = frozenset({
+    "play_move", "list_assets", "action_lookup", "device_stop"
+})
 
 
 def _enabled(value: str, name: str) -> bool:
@@ -61,6 +70,97 @@ class MCPConfig:
 
 
 @dataclass(frozen=True)
+class PuppeteerStdioConfig:
+    """A narrowly scoped, operator-owned Forge Puppeteer Reachy gateway."""
+
+    config_path: Path
+    allowed_tools: tuple[str, ...]
+    command: str = "forge-puppeteer-mcp"
+    approved_moves: tuple[tuple[str, str], ...] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.config_path.is_absolute() or not self.config_path.is_file():
+            raise ValueError("PUPPETEER_MCP_CONFIG must point to an existing absolute JSON file")
+        if self.command != "forge-puppeteer-mcp":
+            executable = Path(self.command)
+            if (
+                not executable.is_absolute()
+                or executable.name != "forge-puppeteer-mcp"
+                or not executable.is_file()
+                or not os.access(executable, os.X_OK)
+            ):
+                raise ValueError(
+                    "PUPPETEER_MCP_COMMAND must be forge-puppeteer-mcp or an executable absolute path with that basename"
+                )
+        # These four tools provide pinned discovery, action, outcome lookup, and stop.
+        if (
+            len(self.allowed_tools) != len(_CONVERSATION_REACHY_TOOLS)
+            or len(set(self.allowed_tools)) != len(self.allowed_tools)
+            or set(self.allowed_tools) != _CONVERSATION_REACHY_TOOLS
+        ):
+            raise ValueError(
+                "PUPPETEER_MCP_ALLOWED_TOOLS must explicitly grant play_move, list_assets, action_lookup, and device_stop"
+            )
+        try:
+            config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("PUPPETEER_MCP_CONFIG must be readable valid JSON") from exc
+        if not isinstance(config, dict):
+            raise TypeError("PUPPETEER_MCP_CONFIG must contain a JSON object")
+        if (
+            config.get("backend") != "reachy_sdk"
+            or config.get("device") != "reachy"
+            or config.get("restricted_actions") is not True
+            or config.get("physical_authority") != "I_AUTHORIZE_REACHY_CONTROL"
+        ):
+            raise ValueError("PUPPETEER_MCP_CONFIG must explicitly authorize restricted Reachy moves")
+        ownership_db = config.get("ownership_db")
+        action_journal = config.get("action_journal")
+        if not isinstance(ownership_db, str) or not isinstance(action_journal, str):
+            raise TypeError(
+                "PUPPETEER_MCP_CONFIG must set shared absolute ownership_db and action_journal paths"
+            )
+        ownership_path = Path(ownership_db)
+        journal_path = Path(action_journal)
+        if (
+            not ownership_path.is_absolute()
+            or not journal_path.is_absolute()
+            or ownership_path.resolve() == journal_path.resolve()
+        ):
+            raise ValueError(
+                "PUPPETEER_MCP_CONFIG ownership_db and action_journal must be distinct absolute paths"
+            )
+        grants = config.get("allowed_tools")
+        if (
+            not isinstance(grants, list)
+            or any(not isinstance(name, str) for name in grants)
+            or not set(self.allowed_tools) <= set(grants)
+            or len(set(grants)) != len(grants)
+            or not set(grants) <= _RESTRICTED_REACHY_TOOLS
+        ):
+            raise ValueError("PUPPETEER_MCP_CONFIG has unsafe or invalid restricted Reachy tool grants")
+        moves = config.get("approved_moves")
+        if not isinstance(moves, list) or not moves:
+            raise ValueError("PUPPETEER_MCP_CONFIG must pin at least one approved Reachy move")
+        pins: set[tuple[str, str]] = set()
+        for move in moves:
+            if not isinstance(move, dict):
+                raise TypeError("PUPPETEER_MCP_CONFIG contains an invalid approved move pin")
+            asset_id, revision = move.get("asset_id"), move.get("revision")
+            if (
+                not isinstance(asset_id, str) or not asset_id.startswith("reachy/")
+                or asset_id == "reachy/" or not isinstance(revision, str)
+                or not _REACHY_REVISION.fullmatch(revision)
+            ):
+                raise ValueError("PUPPETEER_MCP_CONFIG contains an invalid approved move pin")
+            pin = (asset_id, revision)
+            if pin in pins:
+                raise ValueError("PUPPETEER_MCP_CONFIG contains duplicate approved move pins")
+            pins.add(pin)
+        object.__setattr__(self, "approved_moves", tuple(sorted(pins)))
+
+
+@dataclass(frozen=True)
 class HermesConfig:
     url: str
     key: str = field(repr=False)
@@ -74,6 +174,7 @@ class HermesConfig:
 @dataclass(frozen=True)
 class Integrations:
     mcp: MCPConfig | None = None
+    puppeteer_stdio: PuppeteerStdioConfig | None = None
     hermes: HermesConfig | None = None
 
 
@@ -87,6 +188,20 @@ def load_integrations(env: dict[str, str] | None = None) -> Integrations:
     elif e.get("MCP_ALLOWED_TOOLS", "").strip() or e.get("MCP_TOKEN", "").strip():
         raise ValueError("MCP_URL must be set when MCP credentials or tools are configured")
 
+    puppeteer_path = e.get("PUPPETEER_MCP_CONFIG", "").strip()
+    puppeteer_command = e.get("PUPPETEER_MCP_COMMAND", "").strip() or "forge-puppeteer-mcp"
+    puppeteer_tools = tuple(
+        item.strip() for item in e.get("PUPPETEER_MCP_ALLOWED_TOOLS", "").split(",")
+        if item.strip()
+    )
+    puppeteer_stdio = None
+    if puppeteer_path:
+        puppeteer_stdio = PuppeteerStdioConfig(
+            Path(puppeteer_path), puppeteer_tools, command=puppeteer_command
+        )
+    elif puppeteer_tools or puppeteer_command != "forge-puppeteer-mcp":
+        raise ValueError("PUPPETEER_MCP_CONFIG must be set when Puppeteer options are configured")
+
     hermes_enabled = _enabled(e.get("HERMES_DELEGATION_ENABLED", "false"), "HERMES_DELEGATION_ENABLED")
     hermes = None
     if hermes_enabled:
@@ -94,4 +209,4 @@ def load_integrations(env: dict[str, str] | None = None) -> Integrations:
             url=e.get("HERMES_API_URL", "http://127.0.0.1:8642").strip(),
             key=e.get("HERMES_API_KEY", ""),
         )
-    return Integrations(mcp=mcp, hermes=hermes)
+    return Integrations(mcp=mcp, puppeteer_stdio=puppeteer_stdio, hermes=hermes)
