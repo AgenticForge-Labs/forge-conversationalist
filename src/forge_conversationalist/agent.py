@@ -25,6 +25,7 @@ from .config import (
     load_profile,
 )
 from .integrations import load_integrations
+from .embodiment import EmbodimentSession
 from .speech_catalog import selected_speech_model
 from .text_hook import install_assistant_text_hook, install_session_state_hook
 from .transcript_rpc import register_transcript_rpc
@@ -220,17 +221,34 @@ async def entrypoint(ctx: object) -> None:
             extra={"item_id": signal.item_id, "interrupted": signal.interrupted},
         ),
     )
-    install_session_state_hook(
-        session,
-        lambda signal: logger.debug(
+    embodiment = None
+    if agent_integrations.embodiment is not None:
+        if not isinstance(room_name, str) or not room_name:
+            raise RuntimeError("Embodiment requires a stable LiveKit room identity")
+        embodiment = EmbodimentSession(
+            agent_integrations.embodiment,
+            room_id=room_name,
+            caller_id=authorized_identity or "conversationalist-worker",
+        )
+        await embodiment.start()  # Fake-only discovery and MCP handshake; no SDK device.
+        ctx.add_shutdown_callback(embodiment.close)
+
+    def handle_state(signal):
+        logger.debug(
             "conversation state changed", extra={"state": signal.state, "source": signal.source}
-        ),
-    )
+        )
+        if embodiment is not None:
+            embodiment.observe(signal.state)
+
+    install_session_state_hook(session, handle_state)
     agent = Agent(
         instructions=_room_instructions(
             agent_integrations, caller_id=authorized_identity, session_id=room_name
         ),
-        tools=build_assistant_tools(agent_integrations),
+        tools=build_assistant_tools(
+            agent_integrations,
+            embodiment_session=embodiment if authorized_identity else None,
+        ),
     )
     room_options = room_io.RoomOptions(
         close_on_disconnect=False,
@@ -269,6 +287,17 @@ def _room_instructions(
     """Add only the operator-pinned Reachy move IDs to this room's guidance."""
     config = getattr(integrations, "puppeteer_stdio", None)
     if config is None:
+        if getattr(integrations, "embodiment", None) is not None:
+            return INSTRUCTIONS + (
+                " A fake-only Puppeteer embodiment is configured. Use "
+                "discover_performer to list its exact simulated expression names "
+                "and revisions, and request_performer_expression only when a "
+                "person explicitly requests expression. This is simulation, not "
+                "proof of physical robot motion. Check accepted action IDs with "
+                "check_performer_action; do not retry unknown outcomes. "
+                "Speaking/listening state is approximate, not a confirmed audio "
+                "playback clock."
+            )
         return INSTRUCTIONS
     pins = ", ".join(f"{asset_id} ({revision})" for asset_id, revision in config.approved_moves)
     available = set(config.allowed_tools)
