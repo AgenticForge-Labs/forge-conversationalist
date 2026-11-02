@@ -13,8 +13,14 @@ import {
   useRoomContext,
 } from "@livekit/components-react";
 import type { OpenRouterTtsModel } from "@/lib/openrouter-tts";
+import { ConnectionState, createLocalAudioTrack, RoomEvent, type LocalAudioTrack, type RemoteParticipant } from "livekit-client";
+import { PressToTalkController, pttCaptureOptions } from "@/lib/press-to-talk";
+import { canUseRoomInput, describeSessionStartFailure, endBoundSession, shouldEnableContinuousMicrophone } from "@/lib/session-actions.mjs";
+import { MICROPHONE_MODE_KEY, parseMicrophoneMode } from "@/lib/microphone-mode.mjs";
+import { combineTranscript, parseTranscriptResponse, shouldRestoreTranscript } from "@/lib/transcript.mjs";
+import type { TranscriptMessage } from "@/lib/transcript";
 
-type RoomGrant = { token: string; serverUrl: string; roomName: string };
+type RoomGrant = { token: string; serverUrl: string; roomName: string; resumed: boolean };
 
 type RoomSpeechSettings = {
   models: OpenRouterTtsModel[];
@@ -22,11 +28,22 @@ type RoomSpeechSettings = {
   model: string;
   voice: string;
   onChange: (model: string, voice: string) => Promise<void>;
+  onEditStart: () => void;
+  editRevision: number;
   vadSensitivity: string;
   onVadSensitivityChange: (value: string) => void;
 };
 
-function RoomConversation({ speech }: { speech: RoomSpeechSettings }) {
+type MicrophoneMode = "continuous" | "press-to-talk";
+
+function RoomConversation({ speech, microphoneMode, onMicrophoneModeChange, ending, onEnd, resumed }: {
+  speech: RoomSpeechSettings;
+  microphoneMode: MicrophoneMode;
+  onMicrophoneModeChange: (mode: MicrophoneMode) => void;
+  ending: boolean;
+  onEnd: () => void;
+  resumed: boolean;
+}) {
   const { state, audioTrack } = useVoiceAssistant();
   const transcriptions = useTranscriptions();
   const room = useRoomContext();
@@ -35,9 +52,73 @@ function RoomConversation({ speech }: { speech: RoomSpeechSettings }) {
   const [sendError, setSendError] = useState("");
   const [speechError, setSpeechError] = useState("");
   const [changingSpeech, setChangingSpeech] = useState(false);
+  const [pttHeld, setPttHeld] = useState(false);
+  const [microphoneError, setMicrophoneError] = useState("");
+  const [restoredTranscript, setRestoredTranscript] = useState<TranscriptMessage[]>([]);
+  const [transcriptRestoreStatus, setTranscriptRestoreStatus] = useState<"" | "loading" | "unavailable">(resumed ? "loading" : "");
+  const [requiresTranscriptHandshake, setRequiresTranscriptHandshake] = useState(resumed);
+  const [transcriptHandshakeComplete, setTranscriptHandshakeComplete] = useState(!resumed);
+  const transcriptHandshakeRef = useRef(!resumed);
+  const pttHeldRef = useRef(false);
+  const pttControllerRef = useRef<PressToTalkController<LocalAudioTrack> | null>(null);
+  const retryTranscriptRestoreRef = useRef<() => void>(() => {});
+  const microphoneModeRef = useRef(microphoneMode);
+  microphoneModeRef.current = microphoneMode;
+  const speechEditRevisionRef = useRef(speech.editRevision);
+  speechEditRevisionRef.current = speech.editRevision;
   const selectedModel = speech.models.find((model) => model.id === speech.model);
+  const transcriptRows = combineTranscript(restoredTranscript, transcriptions, room.localParticipant.identity);
+  const roomInputReady = canUseRoomInput(requiresTranscriptHandshake, transcriptHandshakeComplete);
+  transcriptHandshakeRef.current = roomInputReady;
+
+  if (!pttControllerRef.current) {
+    pttControllerRef.current = new PressToTalkController(
+      () => createLocalAudioTrack(pttCaptureOptions(room)),
+      (track) => room.localParticipant.publishTrack(track),
+      (track) => room.localParticipant.unpublishTrack(track),
+    );
+  }
+
+  async function setPtt(enabled: boolean) {
+    if (enabled === pttHeldRef.current) return;
+    if (enabled && !transcriptHandshakeRef.current) return;
+    pttHeldRef.current = enabled;
+    setPttHeld(enabled);
+    setMicrophoneError("");
+    try {
+      if (enabled) await pttControllerRef.current?.press();
+      else await pttControllerRef.current?.release();
+    } catch {
+      pttHeldRef.current = false;
+      setPttHeld(false);
+      setMicrophoneError("Could not start the microphone. Check browser permission and try again.");
+    }
+  }
+
+  async function endRoom() {
+    pttHeldRef.current = false;
+    setPttHeld(false);
+    await pttControllerRef.current?.release();
+    try {
+      await room.localParticipant.setMicrophoneEnabled(false);
+    } catch {
+      setMicrophoneError("The room is ending; microphone shutdown may take a moment.");
+    }
+    onEnd();
+  }
+
+  async function setMicrophoneEnabled(enabled: boolean) {
+    try {
+      await room.localParticipant.setMicrophoneEnabled(enabled);
+    } catch {
+      setMicrophoneError(enabled
+        ? "Could not start the microphone. Check browser permission and try again."
+        : "Could not stop microphone capture.");
+    }
+  }
 
   async function selectSpeech(model: string, voice: string) {
+    speech.onEditStart();
     setChangingSpeech(true);
     setSpeechError("");
     try {
@@ -67,6 +148,10 @@ function RoomConversation({ speech }: { speech: RoomSpeechSettings }) {
     event.preventDefault();
     const message = text.trim();
     if (!message || isSending) return;
+    if (!transcriptHandshakeRef.current) {
+      setSendError("Reconnecting… wait until the conversation is ready before sending.");
+      return;
+    }
     setSending(true);
     setSendError("");
     try {
@@ -79,6 +164,194 @@ function RoomConversation({ speech }: { speech: RoomSpeechSettings }) {
     }
   }
 
+  useEffect(() => () => {
+    pttHeldRef.current = false;
+    void pttControllerRef.current?.release();
+  }, [room]);
+
+  useEffect(() => {
+    const releasePtt = () => {
+      if (!pttHeldRef.current) return;
+      pttHeldRef.current = false;
+      setPttHeld(false);
+      void pttControllerRef.current?.release();
+    };
+    const releaseWhenHidden = () => {
+      if (document.visibilityState === "hidden") releasePtt();
+    };
+    window.addEventListener("blur", releasePtt);
+    document.addEventListener("visibilitychange", releaseWhenHidden);
+    return () => {
+      window.removeEventListener("blur", releasePtt);
+      document.removeEventListener("visibilitychange", releaseWhenHidden);
+    };
+  }, [room]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let waitingForAgent = false;
+    let restoring = false;
+    let restoreAgain = false;
+    let mayRestore = resumed;
+
+    async function restoreTranscript() {
+      if (restoring) {
+        restoreAgain = true;
+        return;
+      }
+      transcriptHandshakeRef.current = false;
+      setRequiresTranscriptHandshake(true);
+      setTranscriptHandshakeComplete(false);
+      setTranscriptRestoreStatus("loading");
+      const agent = [...room.remoteParticipants.values()].find((participant) =>
+        participant.identity.startsWith("agent-"),
+      );
+      if (!agent) {
+        waitingForAgent = true;
+        return;
+      }
+      waitingForAgent = false;
+      restoring = true;
+      try {
+        const result = await room.localParticipant.performRpc({
+          destinationIdentity: agent.identity,
+          method: "forge.get_transcript",
+          payload: "{}",
+          responseTimeout: 8_000,
+        });
+        if (cancelled) return;
+        const messages = parseTranscriptResponse(result);
+        setRestoredTranscript(messages);
+        setSendError("");
+        transcriptHandshakeRef.current = true;
+        setTranscriptHandshakeComplete(true);
+        setTranscriptRestoreStatus("");
+        if (shouldEnableContinuousMicrophone(microphoneModeRef.current, true)) {
+          void setMicrophoneEnabled(true);
+        }
+      } catch {
+        if (!cancelled) {
+          transcriptHandshakeRef.current = false;
+          setTranscriptHandshakeComplete(false);
+          setTranscriptRestoreStatus("unavailable");
+        }
+      } finally {
+        restoring = false;
+        if (!cancelled && restoreAgain) {
+          restoreAgain = false;
+          void restoreTranscript();
+        }
+      }
+    }
+    retryTranscriptRestoreRef.current = () => { void restoreTranscript(); };
+
+    const onParticipantConnected = (participant: RemoteParticipant) => {
+      if (mayRestore && waitingForAgent && participant.identity.startsWith("agent-")) {
+        void restoreTranscript();
+      }
+    };
+    const onConnected = () => {
+      if (shouldRestoreTranscript("connected", resumed)) void restoreTranscript();
+    };
+    const onReconnected = () => {
+      mayRestore = true;
+      if (shouldRestoreTranscript("reconnected", resumed)) void restoreTranscript();
+    };
+    const onReconnecting = () => {
+      transcriptHandshakeRef.current = false;
+      setRequiresTranscriptHandshake(true);
+      setTranscriptHandshakeComplete(false);
+      setTranscriptRestoreStatus("loading");
+      pttHeldRef.current = false;
+      setPttHeld(false);
+      void pttControllerRef.current?.release();
+      if (microphoneModeRef.current === "continuous") void setMicrophoneEnabled(false);
+    };
+    room.on(RoomEvent.Reconnecting, onReconnecting);
+    room.on(RoomEvent.Connected, onConnected);
+    room.on(RoomEvent.Reconnected, onReconnected);
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+    if (room.state === ConnectionState.Connected && shouldRestoreTranscript("connected", resumed)) {
+      void restoreTranscript();
+    }
+    else waitingForAgent = true;
+
+    return () => {
+      cancelled = true;
+      room.off(RoomEvent.Reconnecting, onReconnecting);
+      room.off(RoomEvent.Connected, onConnected);
+      room.off(RoomEvent.Reconnected, onReconnected);
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+    };
+  }, [room, resumed]);
+
+  useEffect(() => {
+    const enableContinuousIfReady = () => {
+      if (shouldEnableContinuousMicrophone(microphoneModeRef.current, transcriptHandshakeRef.current)) {
+        void setMicrophoneEnabled(true);
+      }
+    };
+    room.on(RoomEvent.Connected, enableContinuousIfReady);
+    if (room.state === ConnectionState.Connected) enableContinuousIfReady();
+    return () => {
+      room.off(RoomEvent.Connected, enableContinuousIfReady);
+    };
+  }, [room]);
+
+  useEffect(() => {
+    if (!resumed) return;
+    let cancelled = false;
+    let waitingForAgent = false;
+    let restoring = false;
+    let revisionAtStart = speechEditRevisionRef.current;
+
+    async function restoreSpeech() {
+      if (restoring) return;
+      const agent = [...room.remoteParticipants.values()].find((participant) =>
+        participant.identity.startsWith("agent-"),
+      );
+      if (!agent) {
+        waitingForAgent = true;
+        return;
+      }
+      waitingForAgent = false;
+      restoring = true;
+      revisionAtStart = speechEditRevisionRef.current;
+      try {
+        const result = await room.localParticipant.performRpc({
+          destinationIdentity: agent.identity,
+          method: "forge.get_speech",
+          payload: "{}",
+          responseTimeout: 8_000,
+        });
+        if (cancelled || revisionAtStart !== speechEditRevisionRef.current) return;
+        const settings = JSON.parse(result) as { model?: unknown; voice?: unknown };
+        if (typeof settings.model === "string" && typeof settings.voice === "string") {
+          await speech.onChange(settings.model, settings.voice);
+        }
+      } catch {
+        if (!cancelled && revisionAtStart === speechEditRevisionRef.current) {
+          setSpeechError("Could not restore the current speech settings; keeping the selected voice.");
+        }
+      } finally {
+        restoring = false;
+      }
+    }
+
+    const onParticipantConnected = (participant: RemoteParticipant) => {
+      if (waitingForAgent && participant.identity.startsWith("agent-")) void restoreSpeech();
+    };
+    room.on(RoomEvent.Connected, restoreSpeech);
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+    if (room.state === ConnectionState.Connected) void restoreSpeech();
+    else waitingForAgent = true;
+    return () => {
+      cancelled = true;
+      room.off(RoomEvent.Connected, restoreSpeech);
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+    };
+  }, [room, resumed]);
+
   return (
     <section className="conversation">
       <div className="status">
@@ -87,8 +360,67 @@ function RoomConversation({ speech }: { speech: RoomSpeechSettings }) {
           <h2>{state ?? "connecting"}</h2>
         </div>
         {audioTrack ? <BarVisualizer state={state} trackRef={audioTrack} barCount={14} /> : null}
+        <button className="secondary" disabled={ending} onClick={() => void endRoom()}>
+          {ending ? "Ending…" : "End conversation"}
+        </button>
       </div>
-      <VoiceAssistantControlBar saveUserChoices={false} />
+      <VoiceAssistantControlBar saveUserChoices={false} controls={{ microphone: shouldEnableContinuousMicrophone(microphoneMode, roomInputReady) }} />
+      <fieldset className="device-chooser">
+        <legend>Microphone mode</legend>
+        <label htmlFor="microphone-mode">How to send audio</label>
+        <select
+          id="microphone-mode"
+          value={microphoneMode}
+          onChange={(event) => {
+            const mode = event.target.value as MicrophoneMode;
+            microphoneModeRef.current = mode;
+            pttHeldRef.current = false;
+            setPttHeld(false);
+            void (async () => {
+              await pttControllerRef.current?.release();
+              await setMicrophoneEnabled(shouldEnableContinuousMicrophone(mode, roomInputReady));
+            })();
+            onMicrophoneModeChange(mode);
+          }}
+        >
+          <option value="continuous">Continuous listening</option>
+          <option value="press-to-talk">Press to talk</option>
+        </select>
+        {microphoneMode === "press-to-talk" && (
+          <>
+            <button
+              type="button"
+              disabled={!roomInputReady}
+              aria-pressed={pttHeld}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                void setPtt(true);
+              }}
+              onPointerUp={() => void setPtt(false)}
+              onPointerCancel={() => void setPtt(false)}
+              onLostPointerCapture={() => void setPtt(false)}
+              onBlur={() => void setPtt(false)}
+              onKeyDown={(event) => {
+                if ((event.key === " " || event.key === "Enter") && !event.repeat) {
+                  event.preventDefault();
+                  void setPtt(true);
+                }
+              }}
+              onKeyUp={(event) => {
+                if (event.key === " " || event.key === "Enter") {
+                  event.preventDefault();
+                  void setPtt(false);
+                }
+              }}
+            >
+              {pttHeld ? "Listening… release to send" : "Hold to talk"}
+            </button>
+            <p className="subtle" role="status">Microphone audio is sent only while you hold this button. Release it to stop capture.</p>
+          </>
+        )}
+        {microphoneError && <p className="error" role="alert">{microphoneError}</p>}
+      </fieldset>
       <fieldset className="device-chooser">
         <legend>Audio devices</legend>
         <label>Microphone <MediaDeviceSelect kind="audioinput" /></label>
@@ -147,12 +479,19 @@ function RoomConversation({ speech }: { speech: RoomSpeechSettings }) {
         Conversation state: {state === "listening" || state === "speaking" ? state : "idle"}
       </div>
       <div className="transcript" aria-live="polite" aria-label="Conversation transcript">
-        {transcriptions.length === 0 ? (
+        {transcriptRestoreStatus === "loading" && <p className="subtle" role="status">Reconnecting… restoring the conversation.</p>}
+        {transcriptRows.length === 0 ? (
           <p className="placeholder">Speak naturally or type below to start a conversation.</p>
         ) : (
-          transcriptions.map((item, i) => (
-            <p key={item.streamInfo?.id ?? i}>{item.text}</p>
+          transcriptRows.map((item) => (
+            <p key={item.id}><strong>{item.role === "user" ? "You" : "Agent"}:</strong> {item.text}</p>
           ))
+        )}
+        {transcriptRestoreStatus === "unavailable" && (
+          <div role="status">
+            <p className="subtle">Reconnection is not ready. Retry before sending audio or text.</p>
+            <button type="button" className="secondary" onClick={() => retryTranscriptRestoreRef.current()}>Retry reconnect</button>
+          </div>
         )}
       </div>
       <form onSubmit={sendText} className="message-form">
@@ -165,7 +504,7 @@ function RoomConversation({ speech }: { speech: RoomSpeechSettings }) {
             placeholder="Write a message…"
             maxLength={4000}
           />
-          <button type="submit" disabled={!text.trim() || isSending}>
+          <button type="submit" disabled={!text.trim() || isSending || !roomInputReady}>
             {isSending ? "Sending…" : "Send"}
           </button>
         </div>
@@ -182,14 +521,29 @@ export default function Home() {
   const [ttsCatalogError, setTtsCatalogError] = useState("");
   const [ttsModel, setTtsModel] = useState("");
   const [ttsVoice, setTtsVoice] = useState("");
+  const [speechEditRevision, setSpeechEditRevision] = useState(0);
   const [vadSensitivity, setVadSensitivity] = useState("standard");
+  const [microphoneMode, setMicrophoneMode] = useState<MicrophoneMode>("press-to-talk");
+  const [microphoneModeReady, setMicrophoneModeReady] = useState(false);
   const [room, setRoom] = useState<RoomGrant | null>(null);
   const [loading, setLoading] = useState(false);
+  const [ending, setEnding] = useState(false);
   const [error, setError] = useState("");
   const [authChecking, setAuthChecking] = useState(true);
   const [hasSavedAccess, setHasSavedAccess] = useState(false);
+  const [canResetSession, setCanResetSession] = useState(false);
   const startRef = useRef<() => Promise<void>>(async () => {});
   const autoStartRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      setMicrophoneMode(parseMicrophoneMode(window.localStorage.getItem(MICROPHONE_MODE_KEY)));
+    } catch {
+      setMicrophoneMode("press-to-talk");
+    } finally {
+      setMicrophoneModeReady(true);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -198,12 +552,21 @@ export default function Home() {
         if (!response.ok) throw new Error("catalog unavailable");
         return response.json() as Promise<{ models: OpenRouterTtsModel[] }>;
       })
-      .then(({ models }) => { if (!cancelled) setTtsModels(models); })
+      .then(({ models }) => {
+        if (cancelled) return;
+        setTtsModels(models);
+        const heygenTurbo = models.find((model) => model.id === "heygen/heygen-voice-1-turbo");
+        if (heygenTurbo?.voices.includes("lucian")) {
+          setTtsModel((current) => current || heygenTurbo.id);
+          setTtsVoice((current) => current || "lucian");
+        }
+      })
       .catch(() => { if (!cancelled) setTtsCatalogError("Could not load OpenRouter speech models. The configured voice remains available."); });
     return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
+    if (!microphoneModeReady) return;
     let cancelled = false;
     fetch("/api/session", { cache: "no-store", credentials: "same-origin" })
       .then((response) => {
@@ -217,7 +580,7 @@ export default function Home() {
       })
       .catch(() => { if (!cancelled) setAuthChecking(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [microphoneModeReady]);
 
   async function start(credential?: string) {
     setError("");
@@ -236,14 +599,16 @@ export default function Home() {
           vadSensitivity,
         }),
       });
+      const responseBody = await response.json().catch(() => ({})) as Record<string, unknown>;
       if (!response.ok) {
         if (response.status === 401 && !credential) setHasSavedAccess(false);
-        throw new Error(response.status === 401
-          ? "Invalid local development access token."
-          : "Could not start a session. Check the LiveKit and worker configuration.");
+        const failure = describeSessionStartFailure(response.status, responseBody);
+        setCanResetSession(failure.requiresReset);
+        throw new Error(failure.message);
       }
-      const grant: RoomGrant = await response.json();
+      const grant = responseBody as unknown as RoomGrant;
       setRoom(grant);
+      setCanResetSession(false);
       setHasSavedAccess(true);
       setAccessToken("");
     } catch (e) {
@@ -256,8 +621,32 @@ export default function Home() {
   startRef.current = () => start("");
 
   async function changeSpeech(model: string, voice: string) {
+    setSpeechEditRevision((revision) => revision + 1);
     setTtsModel(model);
     setTtsVoice(voice);
+  }
+
+  function changeMicrophoneMode(mode: MicrophoneMode) {
+    setMicrophoneMode(mode);
+    try {
+      window.localStorage.setItem(MICROPHONE_MODE_KEY, mode);
+    } catch {
+      // Keep the current conversation usable if storage is unavailable.
+    }
+  }
+
+  async function endConversation() {
+    setEnding(true);
+    setError("");
+    try {
+      await endBoundSession();
+      setRoom(null);
+      setCanResetSession(false);
+    } catch (endError) {
+      setError(endError instanceof Error ? endError.message : "Could not end the conversation.");
+    } finally {
+      setEnding(false);
+    }
   }
 
   return (
@@ -282,28 +671,39 @@ export default function Home() {
               />
             </>
           )}
-          <button disabled={(!hasSavedAccess && !accessToken) || loading || authChecking} onClick={() => void start(hasSavedAccess ? "" : undefined)}>
+          <button disabled={(!hasSavedAccess && !accessToken) || loading || authChecking || canResetSession} onClick={() => void start(hasSavedAccess ? "" : undefined)}>
             {loading ? "Connecting…" : hasSavedAccess ? "Start conversation" : "Continue"}
           </button>
+          {canResetSession && (
+            <button className="secondary" disabled={ending} onClick={() => void endConversation()}>
+              {ending ? "Ending stale session…" : "End stale conversation and reset"}
+            </button>
+          )}
           {error ? <p className="error" role="alert">{error}</p> : null}
-          <p className="subtle">Your local development token is kept in an HttpOnly site cookie. No transcript storage is implemented here.</p>
+          <p className="subtle">Your local development token is kept in an HttpOnly site cookie. Conversation history stays in the running agent and is not saved to disk.</p>
         </section>
       ) : (
         <>
           <div className="room-meta">
             <span>Connected room: {room.roomName.slice(0, 28)}</span>
-            <button className="secondary" onClick={() => setRoom(null)}>End conversation</button>
           </div>
           <LiveKitRoom
             serverUrl={room.serverUrl}
             token={room.token}
             connect={true}
-            audio={true}
+            audio={false}
             video={false}
             onDisconnected={() => setRoom(null)}
             onError={() => setError("The LiveKit connection failed.")}
           >
-            <RoomConversation speech={{ models: ttsModels, catalogError: ttsCatalogError, model: ttsModel, voice: ttsVoice, onChange: changeSpeech, vadSensitivity, onVadSensitivityChange: setVadSensitivity }} />
+            <RoomConversation
+              speech={{ models: ttsModels, catalogError: ttsCatalogError, model: ttsModel, voice: ttsVoice, onChange: changeSpeech, onEditStart: () => setSpeechEditRevision((revision) => revision + 1), editRevision: speechEditRevision, vadSensitivity, onVadSensitivityChange: setVadSensitivity }}
+              microphoneMode={microphoneMode}
+              onMicrophoneModeChange={changeMicrophoneMode}
+              ending={ending}
+              onEnd={() => void endConversation()}
+              resumed={room.resumed}
+            />
           </LiveKitRoom>
           {error ? <p className="error" role="alert">{error}</p> : null}
         </>

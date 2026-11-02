@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test:voice-ui": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test lib/press-to-talk.test.mjs lib/session-actions.test.mjs lib/session-binding.test.mjs lib/transcript.test.mjs"
   },
   "dependencies": {
     "@livekit/components-react": "^2.9.0",

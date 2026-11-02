@@ -5,7 +5,8 @@ built on LiveKit Agents. **Conversation needs no robot or local LLM.**
 
 PRs #1 and #2 are merged into main: LiveKit/OpenRouter/hybrid speech
 profiles plus optional authenticated MCP and Hermes delegation.
-Real provider/cloud/hardware acceptance is still outstanding.
+Local OpenRouter/LiveKit voice acceptance has been exercised; hardware
+integration requires separate attended acceptance.
 
 PR #3 adds device-independent presentation signals and optional browser
 microphone/speaker selection. It does **not** add a Platform subscription,
@@ -38,16 +39,22 @@ Set `CONVERSATIONALIST_TURN_DETECTOR_VERSION=v1-mini` in the worker env to run
 the turn detector locally. This loads a roughly 244 MB model and uses VAD-based
 interruption handling; the default cloud setup keeps LiveKit's automatic turn
 detector and adaptive interruption selection.
-The pre-session **Microphone sensitivity** setting adjusts Silero's speech
-activation threshold: **Less sensitive** filters quieter sounds, **Standard**
-uses the existing default, and **More sensitive** detects quieter speech. It
-applies to the next conversation.
+The **Microphone sensitivity** setting adjusts Silero's speech activation
+threshold. Less sensitive may reject background sounds but can also miss quiet
+speech; Standard keeps the SDK default. Changes apply to the next conversation.
 
 Enter the development access token once. The server saves it in a 30-day
 HttpOnly, same-site cookie and automatically connects on later visits. The
 cookie is scoped to the local session API, checked with same-origin protection,
 and is never readable by page JavaScript. Clearing site cookies asks for the
 token again.
+
+The OpenRouter preset defaults to HeyGen Voice Turbo with the `lucian` voice,
+using mono PCM at 44.1 kHz. The model and voice can still be changed per room.
+Closing the browser leaves the agent and its conversation in memory; reopening
+the site resumes the same room and recent transcript. Explicitly ending the
+conversation deletes that room. Conversation history does not survive a worker
+or LiveKit server restart.
 
 During a conversation, use the **Speech model and voice** controls to switch
 OpenRouter TTS models and voices without leaving the room. The worker applies
@@ -162,6 +169,13 @@ conversation media transport. Browser restrictions can prevent selecting
 some speaker outputs. A future Reachy, room-audio, phone or other endpoint
 can join the same room with its own supported audio adapter.
 
+Microphone mode defaults to **Press to talk**. Hold the button to send audio;
+releasing it, switching tabs, or leaving the window stops capture. The selected
+mode is remembered in this browser only, so an existing **Continuous
+listening** preference is restored before automatic reconnect. Only this mode
+preference is stored in localStorage; access credentials use an HttpOnly cookie,
+and the transcript is not stored in browser web storage.
+
 The page also has **manual preview-only** emotion and notification controls,
 even when no robot or LiveKit room is present. New mail is a soft ding,
 new order a double ding, and an error a warning chime; no Platform event
@@ -186,7 +200,7 @@ uv run --extra dev ruff check src tests
 cd web && npm install && npm run check && npm run build
 ```
 
-The app does not persist transcripts or audio. AI provider and LiveKit
+The app does not persist transcripts or audio to disk. AI provider and LiveKit
 service retention depends on external settings. The development
 `POST /api/session` token gate is NOT production authentication; do not
 expose it publicly. No physical motion, purchasing or other consequential

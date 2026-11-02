@@ -8,6 +8,7 @@ transport, model client, agent memory, MCP gateway or robot is created here.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import replace
 from typing import Any
@@ -17,13 +18,18 @@ from .config import (
     AGENT_NAME,
     OPENROUTER_API_BASE,
     OPENROUTER_DEFAULT_TTS,
-    OPENROUTER_TTS_VOICES,
+    OPENROUTER_LEGACY_QWEN_TTS,
+    OPENROUTER_LEGACY_QWEN_VOICES,
     VAD_SENSITIVITY_THRESHOLDS,
     CloudProfile,
     load_profile,
 )
 from .integrations import load_integrations
 from .speech_catalog import selected_speech_model
+from .text_hook import install_assistant_text_hook, install_session_state_hook
+from .transcript_rpc import register_transcript_rpc
+
+logger = logging.getLogger(__name__)
 
 INSTRUCTIONS = (
     "You are Forge Conversationalist, a helpful spoken assistant. "
@@ -159,13 +165,21 @@ def _build_turn_detector(sdk: object) -> object:
     return sdk.inference.TurnDetector(version=version)
 
 
+def _default_tts_sample_rate(profile: CloudProfile) -> int:
+    """Use HeyGen Turbo's documented rate without a startup catalog request."""
+    return 44100 if (
+        profile.tts_provider == "openrouter"
+        and profile.tts_model == OPENROUTER_DEFAULT_TTS
+    ) else 24000
+
+
 async def entrypoint(ctx: object) -> None:
     """Create a room session from worker environment.
 
     This must stay module-level: LiveKit's Linux process executor pickles
     the entrypoint before dispatching a job to its worker process.
     """
-    from livekit.agents import Agent
+    from livekit.agents import Agent, room_io
 
     metadata = getattr(ctx.job, "metadata", "")
     profile = load_profile()
@@ -197,7 +211,20 @@ async def entrypoint(ctx: object) -> None:
     session = build_voice_session(
         profile,
         vad_sensitivity=vad_sensitivity,
-        tts_sample_rate=selected_model["sampleRate"] if selected_model else 24000,
+        tts_sample_rate=selected_model["sampleRate"] if selected_model else _default_tts_sample_rate(profile),
+    )
+    install_assistant_text_hook(
+        session,
+        lambda signal, _text: logger.info(
+            "assistant text completed",
+            extra={"item_id": signal.item_id, "interrupted": signal.interrupted},
+        ),
+    )
+    install_session_state_hook(
+        session,
+        lambda signal: logger.debug(
+            "conversation state changed", extra={"state": signal.state, "source": signal.source}
+        ),
     )
     agent = Agent(
         instructions=_room_instructions(
@@ -205,13 +232,27 @@ async def entrypoint(ctx: object) -> None:
         ),
         tools=build_assistant_tools(agent_integrations),
     )
-    await session.start(room=ctx.room, agent=agent)
+    room_options = room_io.RoomOptions(
+        close_on_disconnect=False,
+        **({"participant_identity": authorized_identity} if authorized_identity else {}),
+    )
+    # RoomIO resolves the explicitly linked participant while starting. The
+    # room must already be connected before that resolution in Agents 1.8.
+    await ctx.connect()
+    await session.start(room=ctx.room, agent=agent, room_options=room_options)
     if authorized_identity:
+        register_transcript_rpc(
+            ctx.room.local_participant,
+            history=session.history,
+            authorized_identity=authorized_identity,
+            room=ctx.room,
+        )
         _register_voice_rpc(
             ctx.room.local_participant,
             caller_identity=authorized_identity,
             agent=agent,
             base_profile=load_profile(),
+            current_profile=profile,
         )
     # A fixed greeting needs TTS only. Asking the LLM to generate it with only
     # system instructions fails on providers that require a user query and
@@ -264,11 +305,23 @@ def _register_voice_rpc(
     caller_identity: str,
     agent: object,
     base_profile: CloudProfile,
+    current_profile: CloudProfile | None = None,
 ) -> None:
-    """Expose voice switching only to the user identity signed into this room."""
+    """Expose speech read and switching only to this room's authorized user."""
     from livekit import rtc
 
+    active_profile = current_profile or base_profile
+
+    async def get_speech(data: object) -> str:
+        if getattr(data, "caller_identity", None) != caller_identity:
+            raise rtc.RpcError(
+                code=rtc.RpcError.ErrorCode.APPLICATION_ERROR,
+                message="Only the authorized room participant can read speech settings",
+            )
+        return json.dumps({"model": active_profile.tts_model, "voice": active_profile.tts_voice})
+
     async def change_voice(data: object) -> str:
+        nonlocal active_profile
         if getattr(data, "caller_identity", None) != caller_identity:
             raise rtc.RpcError(
                 code=rtc.RpcError.ErrorCode.APPLICATION_ERROR,
@@ -283,7 +336,7 @@ def _register_voice_rpc(
 
         model_id = requested.get("tts_model")
         voice = requested.get("tts_voice")
-        sample_rate = 24000
+        sample_rate = _default_tts_sample_rate(base_profile)
         if model_id is None and voice is None:
             profile = base_profile
         else:
@@ -300,8 +353,10 @@ def _register_voice_rpc(
             sample_rate = selected["sampleRate"]
         tts = _build_tts(profile, tts_sample_rate=sample_rate)
         agent.update_options(tts=tts)
+        active_profile = profile
         return json.dumps({"model": profile.tts_model, "voice": profile.tts_voice})
 
+    local_participant.register_rpc_method("forge.get_speech", get_speech)
     local_participant.register_rpc_method("forge.change_speech", change_voice)
 
 
@@ -327,16 +382,16 @@ def _requested_qwen_voice(metadata: str) -> str | None:
     except (TypeError, json.JSONDecodeError):
         return None
     voice = request.get("tts_voice") if isinstance(request, dict) else None
-    return voice if isinstance(voice, str) and voice in OPENROUTER_TTS_VOICES else None
+    return voice if isinstance(voice, str) and voice in OPENROUTER_LEGACY_QWEN_VOICES else None
 
 
 def _profile_for_job(profile: CloudProfile, metadata: str) -> CloudProfile:
-    """Apply a requested voice only to the OpenRouter Qwen TTS profile."""
+    """Apply legacy Qwen voice metadata only to its original model."""
     voice = _requested_qwen_voice(metadata)
     if (
         voice is not None
         and profile.tts_provider == "openrouter"
-        and profile.tts_model == OPENROUTER_DEFAULT_TTS
+        and profile.tts_model == OPENROUTER_LEGACY_QWEN_TTS
     ):
         return replace(profile, tts_voice=voice)
     return profile

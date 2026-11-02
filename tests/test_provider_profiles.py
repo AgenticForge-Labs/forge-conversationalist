@@ -48,15 +48,34 @@ def _build(profile: CloudProfile, key: str | None = "test-key"):
     return result, sdk, openai
 
 
-def test_openrouter_profile_uses_confirmed_published_qwen_voice() -> None:
+def test_openrouter_profile_defaults_to_catalog_heygen_turbo_voice() -> None:
     profile = load_profile({"CONVERSATIONALIST_PRESET": "openrouter"})
     assert (profile.stt_provider, profile.llm_provider, profile.tts_provider) == (
         "openrouter", "openrouter", "openrouter"
     )
     assert profile.stt_model == OPENROUTER_DEFAULT_STT
     assert profile.tts_model == OPENROUTER_DEFAULT_TTS
-    assert profile.tts_voice == OPENROUTER_DEFAULT_VOICE == "loongjohn"
+    assert profile.tts_voice == OPENROUTER_DEFAULT_VOICE == "lucian"
     assert profile.requires_openrouter
+
+
+def test_explicit_non_heygen_tts_settings_keep_their_legacy_defaults() -> None:
+    profile = load_profile({
+        "CONVERSATIONALIST_PRESET": "openrouter",
+        "CONVERSATIONALIST_TTS_MODEL": "qwen/qwen-audio-3.0-tts-flash",
+    })
+    assert profile.tts_voice == "loongjohn"
+    assert profile.tts_response_format == "mp3"
+
+    explicit_format = load_profile({
+        "CONVERSATIONALIST_PRESET": "openrouter",
+        "CONVERSATIONALIST_TTS_MODEL": "other/provider-model",
+        "CONVERSATIONALIST_TTS_VOICE": "chosen-voice",
+        "CONVERSATIONALIST_TTS_RESPONSE_FORMAT": "wav",
+    })
+    assert explicit_format.tts_model == "other/provider-model"
+    assert explicit_format.tts_voice == "chosen-voice"
+    assert explicit_format.tts_response_format == "wav"
 
 
 def test_livekit_default_retains_original_models_and_no_new_key() -> None:
@@ -97,10 +116,10 @@ def test_openrouter_stages_use_fixed_base_and_transcription_http() -> None:
         "openrouter-tts",
         {
             "model": OPENROUTER_DEFAULT_TTS,
-            "voice": "loongjohn",
+            "voice": "lucian",
             "base_url": OPENROUTER_API_BASE,
             "api_key": "test-key",
-            "response_format": "mp3",
+            "response_format": "pcm",
         },
     )
     assert result["vad"] == "silero"

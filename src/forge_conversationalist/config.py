@@ -24,12 +24,12 @@ DEFAULT_VOICE = "fa4c9eb3dccc4806b382b40d61c6b10a"
 
 OPENROUTER_DEFAULT_STT = "nvidia/parakeet-tdt-0.6b-v3"
 OPENROUTER_DEFAULT_LLM = "qwen/qwen3.5-9b"
-OPENROUTER_DEFAULT_TTS = "qwen/qwen-audio-3.0-tts-flash"
-# From OpenRouter's published supported_voices model catalog as of Nov 2026.
-# This is not Reachy's Aiden voice.
-OPENROUTER_DEFAULT_VOICE = "loongjohn"
-# Keep these aligned with OpenRouter's supported_voices for the configured Qwen TTS model.
-OPENROUTER_TTS_VOICES = frozenset(("loongjohn", "longanhuan_v3.6"))
+OPENROUTER_DEFAULT_TTS = "heygen/heygen-voice-1-turbo"
+# OpenRouter's HeyGen Turbo catalog calls this voice "lucian". This is not
+# Reachy's Aiden voice.
+OPENROUTER_DEFAULT_VOICE = "lucian"
+OPENROUTER_LEGACY_QWEN_TTS = "qwen/qwen-audio-3.0-tts-flash"
+OPENROUTER_LEGACY_QWEN_VOICES = frozenset(("loongjohn", "longanhuan_v3.6"))
 
 # Higher Silero activation thresholds require stronger evidence of speech.
 # "standard" leaves the SDK's current default unchanged.
@@ -99,6 +99,13 @@ def load_profile(environ: dict[str, str] | None = None) -> CloudProfile:
         if provider not in _PROVIDERS:
             raise ValueError(f"CONVERSATIONALIST_{stage.upper()}_PROVIDER is invalid")
 
+    tts_model = e.get("CONVERSATIONALIST_TTS_MODEL", _DEFAULTS["tts"][providers["tts"]])
+    default_voice = (
+        "loongjohn"
+        if providers["tts"] == "openrouter"
+        and tts_model == OPENROUTER_LEGACY_QWEN_TTS
+        else _VOICES[providers["tts"]]
+    )
     return CloudProfile(
         stt_provider=providers["stt"],
         llm_provider=providers["llm"],
@@ -110,9 +117,10 @@ def load_profile(environ: dict[str, str] | None = None) -> CloudProfile:
         llm_model=e.get(
             "CONVERSATIONALIST_LLM_MODEL", _DEFAULTS["llm"][providers["llm"]]
         ),
-        tts_model=e.get(
-            "CONVERSATIONALIST_TTS_MODEL", _DEFAULTS["tts"][providers["tts"]]
+        tts_model=tts_model,
+        tts_voice=e.get("CONVERSATIONALIST_TTS_VOICE", default_voice),
+        tts_response_format=e.get(
+            "CONVERSATIONALIST_TTS_RESPONSE_FORMAT",
+            "pcm" if providers["tts"] == "openrouter" and tts_model == OPENROUTER_DEFAULT_TTS else "mp3",
         ),
-        tts_voice=e.get("CONVERSATIONALIST_TTS_VOICE", _VOICES[providers["tts"]]),
-        tts_response_format=e.get("CONVERSATIONALIST_TTS_RESPONSE_FORMAT", "mp3"),
     )

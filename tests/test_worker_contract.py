@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 
 from forge_conversationalist.agent import (
+    _default_tts_sample_rate,
     _profile_for_job,
     _register_voice_rpc,
     _requested_qwen_voice,
@@ -18,6 +19,7 @@ from forge_conversationalist.agent import (
 from forge_conversationalist.config import (
     OPENROUTER_DEFAULT_TTS,
     OPENROUTER_DEFAULT_VOICE,
+    OPENROUTER_LEGACY_QWEN_TTS,
     CloudProfile,
     load_profile,
 )
@@ -30,8 +32,16 @@ def test_job_entrypoint_is_importable_and_picklable() -> None:
 
 
 def test_entrypoint_uses_tts_only_greeting_without_an_llm_request() -> None:
+    lifecycle: list[str] = []
+
+    async def connect() -> None:
+        lifecycle.append("connect")
+
+    async def start(**_kwargs: object) -> None:
+        lifecycle.append("start")
+
     session = SimpleNamespace(
-        start=AsyncMock(), say=AsyncMock(), generate_reply=Mock()
+        start=AsyncMock(side_effect=start), say=AsyncMock(), generate_reply=Mock(), on=Mock()
     )
     with (
         patch("forge_conversationalist.agent.load_profile", return_value=CloudProfile()),
@@ -39,22 +49,35 @@ def test_entrypoint_uses_tts_only_greeting_without_an_llm_request() -> None:
         patch("forge_conversationalist.agent.build_voice_session", return_value=session),
         patch("forge_conversationalist.agent.build_assistant_tools", return_value=[]),
     ):
-        asyncio.run(entrypoint(SimpleNamespace(room="room", job=SimpleNamespace(metadata=""))))
+        context = SimpleNamespace(room="room", job=SimpleNamespace(metadata=""), connect=AsyncMock(side_effect=connect))
+        asyncio.run(entrypoint(context))
 
+    context.connect.assert_awaited_once()
     session.start.assert_awaited_once()
+    assert lifecycle == ["connect", "start"]
+    assert session.start.await_args.kwargs["room_options"].close_on_disconnect is False
+    assert {call.args[0] for call in session.on.call_args_list} == {
+        "conversation_item_added", "agent_state_changed", "user_state_changed"
+    }
     session.say.assert_awaited_once_with("Hello! I'm here to help.")
     session.generate_reply.assert_not_called()
 
 
-def test_job_voice_metadata_is_allowlisted_and_only_applies_to_qwen_openrouter() -> None:
+def test_legacy_qwen_voice_metadata_stays_pinned_to_its_model() -> None:
     assert _requested_qwen_voice('{"tts_voice":"longanhuan_v3.6"}') == "longanhuan_v3.6"
     assert _requested_qwen_voice('{"tts_voice":"untrusted-value"}') is None
     assert _requested_qwen_voice('{"tts_voice":[]}') is None
     assert _requested_qwen_voice("not json") is None
 
-    openrouter = load_profile({"CONVERSATIONALIST_PRESET": "openrouter"})
+    openrouter = load_profile({
+        "CONVERSATIONALIST_PRESET": "openrouter",
+        "CONVERSATIONALIST_TTS_MODEL": OPENROUTER_LEGACY_QWEN_TTS,
+    })
     chosen = _profile_for_job(openrouter, '{"tts_voice":"longanhuan_v3.6"}')
     assert chosen.tts_voice == "longanhuan_v3.6"
+    default_profile = load_profile({"CONVERSATIONALIST_PRESET": "openrouter"})
+    assert _profile_for_job(default_profile, '{"tts_voice":"longanhuan_v3.6"}') is default_profile
+    assert _requested_qwen_voice('{"tts_voice":"lucian"}') is None
 
     other_model = CloudProfile(
         tts_provider="openrouter",
@@ -64,7 +87,14 @@ def test_job_voice_metadata_is_allowlisted_and_only_applies_to_qwen_openrouter()
     assert _profile_for_job(other_model, '{"tts_voice":"longanhuan_v3.6"}') is other_model
     livekit_tts = CloudProfile(tts_voice="provider/default")
     assert _profile_for_job(livekit_tts, '{"tts_voice":"longanhuan_v3.6"}') is livekit_tts
-    assert openrouter.tts_model == OPENROUTER_DEFAULT_TTS
+    assert openrouter.tts_model == OPENROUTER_LEGACY_QWEN_TTS
+
+
+def test_known_default_tts_rate_does_not_require_catalog_access() -> None:
+    profile = load_profile({"CONVERSATIONALIST_PRESET": "openrouter"})
+    assert profile.tts_model == OPENROUTER_DEFAULT_TTS
+    assert _default_tts_sample_rate(profile) == 44100
+    assert _default_tts_sample_rate(CloudProfile(tts_provider="openrouter", tts_model="other/provider-model")) == 24000
 
 
 def test_job_vad_sensitivity_accepts_only_named_presets() -> None:
@@ -86,6 +116,11 @@ def test_live_voice_rpc_updates_tts_for_only_authorized_participant() -> None:
         "responseFormat": "mp3",
         "sampleRate": 24000,
     }
+    base_profile = load_profile({
+        "CONVERSATIONALIST_PRESET": "openrouter",
+        "CONVERSATIONALIST_TTS_MODEL": "qwen/qwen-audio-3.0-tts-flash",
+    })
+    initial_profile = load_profile({"CONVERSATIONALIST_PRESET": "openrouter"})
     with (
         patch("forge_conversationalist.agent.selected_speech_model", return_value=model),
         patch("forge_conversationalist.agent._build_tts", return_value="new-tts") as build_tts,
@@ -94,17 +129,53 @@ def test_live_voice_rpc_updates_tts_for_only_authorized_participant() -> None:
             local_participant,
             caller_identity="person-authorized",
             agent=agent,
-            base_profile=load_profile({"CONVERSATIONALIST_PRESET": "openrouter"}),
+            base_profile=base_profile,
+            current_profile=initial_profile,
         )
+        get_handler = handlers["forge.get_speech"]
+        initial = asyncio.run(get_handler(SimpleNamespace(caller_identity="person-authorized", payload="{}")))
         handler = handlers["forge.change_speech"]
         response = asyncio.run(handler(SimpleNamespace(
             caller_identity="person-authorized",
             payload='{"tts_model":"hexgrad/kokoro-82m","tts_voice":"af_heart"}',
         )))
+        updated = asyncio.run(get_handler(SimpleNamespace(caller_identity="person-authorized", payload="{}")))
+        reset = asyncio.run(handler(SimpleNamespace(
+            caller_identity="person-authorized",
+            payload='{"tts_model":null,"tts_voice":null}',
+        )))
+        after_reset = asyncio.run(get_handler(SimpleNamespace(caller_identity="person-authorized", payload="{}")))
 
+    assert initial == '{"model": "heygen/heygen-voice-1-turbo", "voice": "lucian"}'
     assert response == '{"model": "hexgrad/kokoro-82m", "voice": "af_heart"}'
-    build_tts.assert_called_once()
-    agent.update_options.assert_called_once_with(tts="new-tts")
+    assert updated == response
+    assert reset == '{"model": "qwen/qwen-audio-3.0-tts-flash", "voice": "loongjohn"}'
+    assert after_reset == reset
+    assert build_tts.call_count == 2
+    assert agent.update_options.call_count == 2
+
+
+def test_get_speech_rpc_rejects_unauthorized_room_participants() -> None:
+    handlers: dict[str, object] = {}
+    local_participant = SimpleNamespace(
+        register_rpc_method=lambda name, handler: handlers.__setitem__(name, handler)
+    )
+    _register_voice_rpc(
+        local_participant,
+        caller_identity="person-authorized",
+        agent=SimpleNamespace(update_options=Mock()),
+        base_profile=load_profile({"CONVERSATIONALIST_PRESET": "openrouter"}),
+        current_profile=CloudProfile(
+            tts_provider="openrouter",
+            tts_model="hexgrad/kokoro-82m",
+            tts_voice="af_heart",
+        ),
+    )
+    with pytest.raises(Exception, match="Only the authorized"):
+        asyncio.run(handlers["forge.get_speech"](SimpleNamespace(
+            caller_identity="person-other",
+            payload="{}",
+        )))
 
 
 def test_live_voice_rpc_rejects_other_room_participants() -> None:
