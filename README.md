@@ -161,6 +161,22 @@ is not a live hardware qualification.
 With no integrations configured, Conversationalist has no extra tools
 and simply responds as a cloud voice assistant.
 
+## Optional reusable Puppeteer embodiment (fake-only)
+
+A separate opt-in integration starts one persistent Puppeteer MCP stdio child for
+one configured **fake** Reachy, StackChan or SO-ARM101 performer. It sends
+approximate, content-free LiveKit idle/listening/speaking observations and lets
+an authorized agent discover and explicitly request simulated emotions, dances
+or gestures. No physical robot SDK, permission to move hardware or precise
+speaker playback timing is implied. The existing restricted physical Reachy
+move tool is separate and does not turn on automatically.
+
+Configure `PUPPETEER_EMBODIMENT_CONFIG=/absolute/path/to/fake-performer.json`
+(and optionally `PUPPETEER_EMBODIMENT_COMMAND`); leave unset for normal
+robot-free startup. Follow [Embodiment reference integration](docs/EMBODIMENT.md)
+for clean package install, all three fake profiles, MCP calls, action lookup,
+software tests and physical qualification gaps.
+
 ## Audio devices, expressions and notifications
 
 The web UI lets each connected participant select a supported microphone

@@ -7,6 +7,12 @@ each tool call and enforce its own grants.
 
 from __future__ import annotations
 
+import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .embodiment import EmbodimentSession
+
 from .hermes import HermesRunsClient, HermesUnavailable
 from .integrations import Integrations
 
@@ -37,6 +43,7 @@ def build_assistant_tools(
     hermes_client: HermesRunsClient | None = None,
     mcp_module: object | None = None,
     function_tool_factory: object | None = None,
+    embodiment_session: EmbodimentSession | None = None,
 ) -> list[object]:
     """Construct tools for one room; no integrations means an empty list."""
     tools: list[object] = []
@@ -65,6 +72,36 @@ def build_assistant_tools(
             env={},
         )
         tools.append(_restricted_mcp_toolset(mcp_module, server, conf.allowed_tools))
+
+    if integrations.embodiment is not None and embodiment_session is not None:
+        if function_tool_factory is None:
+            from livekit.agents import function_tool as function_tool_factory
+
+        async def discover_performer() -> str:
+            """Discover the configured fake performer, available expressions and their revisions."""
+            return json.dumps(await embodiment_session.discover())
+
+        async def request_performer_expression(kind: str, name: str, asset_revision: str) -> str:
+            """Request a named simulated emotion, dance or gesture after discovery.
+
+            The exact listed kind, name and asset revision are required. This is
+            not a physical motion capability or proof of action completion.
+            """
+            return json.dumps(await embodiment_session.express(kind, name, asset_revision))
+
+        async def check_performer_action(action_id: str) -> str:
+            """Check an action ID after acceptance; never assume queued is completed."""
+            return json.dumps(await embodiment_session.lookup(action_id))
+
+        tools.extend([
+            function_tool_factory(discover_performer, name="discover_performer",
+                                  description="Discover fake robot expression names, asset pins, and limitations."),
+            function_tool_factory(request_performer_expression,
+                                  name="request_performer_expression",
+                                  description="Request one exact simulated emotion, dance or gesture. No random fallback or hardware motion."),
+            function_tool_factory(check_performer_action, name="check_performer_action",
+                                  description="Read confirmed status of a previous performer expression action ID."),
+        ])
 
     if integrations.hermes is not None:
         if function_tool_factory is None:

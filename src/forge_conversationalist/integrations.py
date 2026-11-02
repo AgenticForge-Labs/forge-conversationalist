@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .embodiment import EmbodimentConfig
+
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 _TRUE = {"true", "1", "yes"}
 _FALSE = {"false", "0", "no", ""}
@@ -175,6 +177,7 @@ class HermesConfig:
 class Integrations:
     mcp: MCPConfig | None = None
     puppeteer_stdio: PuppeteerStdioConfig | None = None
+    embodiment: EmbodimentConfig | None = None
     hermes: HermesConfig | None = None
 
 
@@ -202,6 +205,23 @@ def load_integrations(env: dict[str, str] | None = None) -> Integrations:
     elif puppeteer_tools or puppeteer_command != "forge-puppeteer-mcp":
         raise ValueError("PUPPETEER_MCP_CONFIG must be set when Puppeteer options are configured")
 
+    embodiment_path = e.get("PUPPETEER_EMBODIMENT_CONFIG", "").strip()
+    embodiment_command = e.get("PUPPETEER_EMBODIMENT_COMMAND", "").strip() or "forge-puppeteer-mcp"
+    embodiment = None
+    if embodiment_path:
+        path = Path(embodiment_path)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError("PUPPETEER_EMBODIMENT_CONFIG is invalid") from exc
+        if not isinstance(data, dict):
+            raise ValueError("PUPPETEER_EMBODIMENT_CONFIG must be an object")
+        embodiment = EmbodimentConfig(
+            path, performer_id=data.get("instance_id", ""), command=embodiment_command
+        )
+    elif embodiment_command != "forge-puppeteer-mcp":
+        raise ValueError("PUPPETEER_EMBODIMENT_CONFIG is required with its command")
+
     hermes_enabled = _enabled(e.get("HERMES_DELEGATION_ENABLED", "false"), "HERMES_DELEGATION_ENABLED")
     hermes = None
     if hermes_enabled:
@@ -209,4 +229,5 @@ def load_integrations(env: dict[str, str] | None = None) -> Integrations:
             url=e.get("HERMES_API_URL", "http://127.0.0.1:8642").strip(),
             key=e.get("HERMES_API_KEY", ""),
         )
-    return Integrations(mcp=mcp, puppeteer_stdio=puppeteer_stdio, hermes=hermes)
+    return Integrations(mcp=mcp, puppeteer_stdio=puppeteer_stdio,
+                        embodiment=embodiment, hermes=hermes)

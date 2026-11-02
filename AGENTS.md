@@ -27,6 +27,18 @@ PRs #1 and #2 are merged into main; PR #3 adds presentation contracts and browse
   operations need attended acceptance; unit-test green is not production ready.
 - Keep PR statuses and exact SHAs in handoff.
 
+## Reusable fake-only embodiment v1
+- Puppeteer PR #10 merged `forge.embodiment.v1` to main. The optional
+  `PUPPETEER_EMBODIMENT_CONFIG` path is a strictly fake-only MCP child;
+  avoid duplicating robot SDKs and never interpret simulated expressions as
+  physical qualification.
+- Use `SessionStateHook` for approximate `agent_state` presence, with
+  versioned sequence and periodic state refresh. Do not call these measured
+  output start/drain times. Never automatically retry unknown action outcomes.
+- One room-owned MCP child handles both observation and explicit expression.
+  Do not start a parallel process for the same room's expressions.
+- Preserve no-robot startup and the separate restricted Reachy MCP path.
+
 ## Device-independent presence and notifications
 - Audio belongs to a LiveKit participant, not to a particular robot or
   personality. Browser audio selectors can change only supported devices.
