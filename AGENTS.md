@@ -2,7 +2,7 @@
 
 Read organization-level `development.md` and `architecture.md` first.
 GitHub main is the authoritative integrated state; inspect open PRs.
-PRs #1 and #2 are merged into main; PR #3 adds presentation contracts and browser device selection.
+PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 is merged; this repository's PR #9 connects an authorized LiveKit room to its fixed semantic MCP interface.
 
 ## Boundaries
 - LiveKit owns realtime audio, rooms, VAD and playback.
