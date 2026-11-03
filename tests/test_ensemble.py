@@ -122,8 +122,8 @@ def test_ensemble_agent_tools_only_status_and_exact_explicit_gestures(tmp_path):
         async def status(self):
             return {"schema": "forge.behavior.v1", "state": "speaking"}
 
-        async def express(self, name):
-            self.expressions.append(name)
+        async def express(self, name, performer_id):
+            self.expressions.append((name, performer_id))
             return {"outcome": "accepted", "expression": name}
 
     registered = {}
@@ -145,13 +145,13 @@ def test_ensemble_agent_tools_only_status_and_exact_explicit_gestures(tmp_path):
 
     async def run():
         assert json.loads(await registered["get_ensemble_status"]())["state"] == "speaking"
-        result = json.loads(await registered["request_ensemble_gesture"]("yes"))
+        result = json.loads(await registered["request_ensemble_gesture"]("yes", "reachy"))
         assert result["outcome"] == "accepted" and result["expression"] == "yes"
         assert result["completion"] == "unconfirmed"
         assert "not confirmed complete" in result["spoken_guidance"]
 
     asyncio.run(run())
-    assert stub.expressions == ["yes"]
+    assert stub.expressions == [("yes", "reachy")]
     assert build_assistant_tools(cfg, function_tool_factory=factory) == []
 
 
@@ -188,7 +188,9 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tm
         "async def ensemble_state() -> State:\n"
         "    return {'schema':'forge.behavior.v1','session_id':None,\n"
         "       'state':'disconnected','performers':{\n"
-        "       'reachy':{},'stackchan':{},'soarm101':{}}}\n"
+        "       'reachy':{'expressions':['yes','no','happy'],'status':'idle'},\n"
+        "       'stackchan':{'expressions':['yes'],'status':'idle'},\n"
+        "       'soarm101':{'expressions':['yes','no'],'status':'idle'}}}\n"
         "@app.tool()\n"
         "async def ensemble_presence(session_id: str, event_id: str,\n"
         "   sequence: int, state: str, source: str = 'agent_state',\n"
@@ -196,7 +198,8 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tm
         "    write('presence',locals())\n"
         "    return {'outcome':'accepted','state':state}\n"
         "@app.tool()\n"
-        "async def ensemble_expression(expression: str, action_id: str) -> Outcome:\n"
+        "async def ensemble_expression(expression: str, action_id: str,\n"
+        "   performer_ids: list[str] | None = None) -> Outcome:\n"
         "    write('expression', locals())\n"
         "    return {'outcome':'accepted','expression':expression}\n"
         "app.run(transport='stdio')\n",
@@ -214,9 +217,11 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tm
         room.observe("speaking")
         room.observe("listening", interrupted=True)
         await asyncio.sleep(0.03)
-        outcome = await room.express("yes")
+        outcome = await room.express("yes", "reachy")
         assert outcome == {"outcome": "accepted", "expression": "yes"}
-        assert (await room.express("raw_motor_goal"))["outcome"] == "unsupported"
+        assert (await room.express("raw_motor_goal", "reachy"))["outcome"] == "unsupported"
+        assert (await room.express("happy", "stackchan"))["outcome"] == "unsupported"
+        assert (await room.express("yes", "invented-robot"))["outcome"] == "unsupported"
         assert (await room.status())["state"] == "disconnected"
     finally:
         await room.close()
@@ -224,6 +229,7 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tm
     assert [e["kind"] for e in logged] == [
         "presence", "presence", "presence", "expression", "presence",
     ]
+    assert [e["value"]["performer_ids"] for e in logged if e["kind"] == "expression"] == [["reachy"]]
     presence = [e["value"] for e in logged if e["kind"] == "presence"]
     assert [x["state"] for x in presence] == ["listening", "speaking", "listening", "disconnected"]
     assert [x["sequence"] for x in presence] == [0, 1, 2, 3]
