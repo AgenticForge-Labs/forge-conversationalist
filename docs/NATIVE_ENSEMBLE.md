@@ -8,6 +8,48 @@ This is a **software-only conversation/event bridge**. Do not equate it
 with qualified SO-ARM physical motion, Reachy recorded movement, StackChan
 USB control, or measured voice-to-motion sync.
 
+## Current supported native performer selections
+
+The signed LiveKit worker can start a single `forge-puppeteer-ensemble`
+child with these strictly reviewed config schemas:
+
+- **v1**: Reachy Mini, StackChan and SO-ARM101 (SO-ARM may simulate).
+- **v2**: Reachy Mini alone.
+- **v3**: **Reachy Mini + StackChan together**, with no SO-ARM profile,
+  simulation, SDK session, program or watchdog.
+
+The v3 duo is implemented in merged Puppeteer PR #25
+(`57881e0686e95a4dd297117bb6e820e847632d9c`). The worker's
+`PuppeteerEnsembleConfig` verifies exactly which native performers the
+operator authorized and requires the MCP child's
+`ensemble_state.performers` to match those IDs without extras; an
+unexpected or absent device denies the child rather than inventing a
+performer. No user/LLM text may alter this selection.
+
+Author a **review-only** v3 config through Puppeteer's
+`scripts/author_three_robot_ensemble.py --reachy-stackchan-only` using
+the documented reachy-manifest, recordings, neutral and StackChan port
+arguments. Review all `REVIEW_REQUIRED` fields with the operator before
+any SDK session can start. Then set, in the *trusted Conversationalist
+worker's* root `.env.local`:
+
+```bash
+PUPPETEER_ENSEMBLE_CONFIG=/absolute/path/to/approved-reachy-stackchan-duo.json
+```
+
+Start the normal LiveKit worker and audio participant. Conversationalist
+starts **one** room-owned Puppeteer child, not two individual robot
+servers; do not simultaneously launch `forge-puppeteer-ensemble` manually
+against the same hardware. Keep the Pollen Conversation App stopped.
+StackChan EXT CONTROL must already be open and must report its native
+USB capabilities. Reachy must be physically reconciled and appropriately
+authorized before motion; neither voice admission nor CI establishes
+motor settling, physical STOP, safe startup or qualified speech sync.
+
+The previously documented v1/v2 launch commands below remain valid as
+historical examples; install the current merged Puppeteer/SDK commits
+rather than the older pinned PR #13 dependencies shown there.
+
 ## Ownership
 
 ```text
