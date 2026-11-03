@@ -104,7 +104,9 @@ def test_playback_presence_opt_in_attaches_to_livekit_output_after_start() -> No
         asyncio.run(entrypoint(ctx))
     session.start.assert_awaited_once()
     session.say.assert_awaited_once()
-    assert set(listeners) == {"playback_started", "playback_finished"}
+    assert set(listeners) == {
+        "playback_started", "playback_finished", "playback_progressed",
+    }
     listeners["playback_started"][0](SimpleNamespace(created_at=123.0))
     robot.observe.assert_called_with("speaking", source="playback", interrupted=False)
     listeners["playback_finished"][0](

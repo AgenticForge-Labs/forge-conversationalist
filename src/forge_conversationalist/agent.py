@@ -264,7 +264,8 @@ async def entrypoint(ctx: object) -> None:
         PlaybackPresence(
             lambda state, source, interrupted: ensemble.observe(
                 state, source=source, interrupted=interrupted,
-            ) if ensemble is not None else None
+            ) if ensemble is not None else None,
+            session_id=room_name,
         )
         if ensemble is not None and os.getenv("CONVERSATIONALIST_PLAYBACK_PRESENCE") == "1"
         else None
