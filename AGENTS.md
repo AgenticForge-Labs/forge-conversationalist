@@ -87,3 +87,18 @@ PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 i
 - A missing/incompatible output hook falls back to existing semantic
   presence. Keep tests with fake output emitters and fake robots; physical
   acceptance and precise playback calibration are independent gates.
+
+
+## Provider-neutral outgoing speech envelope
+
+- A hardware-free forge.speech_envelope.v1 analyzer uses only outbound
+  synthesized PCM. It does not inspect microphone samples, words, transcripts,
+  or company data.
+- The synthesized-audio time axis is generated_pcm, **not** actual LiveKit
+  track playout, remote/browser speaker output, or physical motion.
+- Own the real LiveKit pipeline tap in Conversationalist. Do not construct
+  a second sink, decoder, player, or audio service for Puppeteer.
+- Preserve the same room-owned MCP client, ordered presence, immediate
+  interruption and uncertain STOP quarantine. Never pass raw PCM to robots.
+- The analyzer alone is not integrated into a live room, authorized for
+  physical motion, or synchronized to a speaker; each stage must be explicit.
