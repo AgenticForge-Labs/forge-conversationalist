@@ -38,6 +38,16 @@ def operator_file(tmp_path: Path, **overrides) -> Path:
     return path
 
 
+def test_ensemble_presence_source_is_explicitly_validated(tmp_path):
+    client = EnsembleSession(
+        PuppeteerEnsembleConfig(operator_file(tmp_path)),
+        room_id="room", caller_id="operator",
+    )
+    assert client._presence("speaking", source="playback")["source"] == "playback"
+    with pytest.raises(ValueError, match="timing source"):
+        client.observe("speaking", source="device-clock")
+
+
 def test_native_ensemble_disabled_by_default_and_no_new_agent_identity(tmp_path):
     assert load_integrations({}) == Integrations()
     configured = load_integrations({
@@ -214,8 +224,8 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tm
         status = await room.start()
         assert status["state"] == "disconnected"
         room.observe("listening")
-        room.observe("speaking")
-        room.observe("listening", interrupted=True)
+        room.observe("speaking", source="playback")
+        room.observe("listening", source="playback", interrupted=True)
         await asyncio.sleep(0.03)
         outcome = await room.express("yes", "reachy")
         assert outcome == {"outcome": "accepted", "expression": "yes"}
@@ -234,7 +244,9 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tm
     assert [x["state"] for x in presence] == ["listening", "speaking", "listening", "disconnected"]
     assert [x["sequence"] for x in presence] == [0, 1, 2, 3]
     assert [x["interrupted"] for x in presence] == [False, False, True, False]
-    assert all(x["source"] == "agent_state" for x in presence)
+    assert [x["source"] for x in presence] == [
+        "agent_state", "playback", "playback", "agent_state",
+    ]
     assert all(not e["llm_env"] for e in logged)
 
 
