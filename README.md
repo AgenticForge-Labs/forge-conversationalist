@@ -87,7 +87,9 @@ options unset always selects the system defaults. This route keeps the same
 LiveKit worker, provider models, room, VAD and turn handling; it does not start
 a second robot motion process. Hold `Ctrl+C` to end the local session and
 delete its ephemeral room. The local LiveKit audio device helper enables AEC,
-noise suppression, high-pass filtering and AGC for its microphone stream.
+noise suppression, high-pass filtering and AGC for its microphone stream. The
+speaker output is connected to AEC as its reverse audio reference to reduce
+the microphone mistaking the agent's reply for a new user interruption.
 The agent's speaking presence still follows its outgoing LiveKit track events;
 those events do not measure the exact moment sound reaches the selected
 speaker.

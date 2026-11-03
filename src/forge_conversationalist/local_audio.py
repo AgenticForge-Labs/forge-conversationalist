@@ -105,6 +105,26 @@ def is_agent_audio(track_kind: int, participant_kind: int, *, rtc: object) -> bo
     )
 
 
+async def _open_duplex_audio(media: object, *, input_device: int | None,
+                             output_device: int | None) -> tuple[object, object]:
+    """Open microphone then speaker so LiveKit wires the speaker AEC reference."""
+    input_capture = media.open_input(
+        input_device=input_device,
+        enable_aec=True,
+        noise_suppression=True,
+        high_pass_filter=True,
+        auto_gain_control=True,
+    )
+    try:
+        # MediaDevices.open_output() binds to the APM created by open_input().
+        output_player = media.open_output(output_device=output_device)
+        await output_player.start()
+    except BaseException:
+        await input_capture.aclose()
+        raise
+    return input_capture, output_player
+
+
 async def wait_for_agent(ready: asyncio.Event, stopping: asyncio.Event, *, timeout: float = 60) -> None:
     """Wait for the dispatched worker, but fail promptly if the room disconnects."""
     if ready.is_set():
@@ -165,6 +185,7 @@ async def run_local_audio(
     room = rtc.Room()
     output_player = None
     input_capture = None
+    output_ready = asyncio.Event()
     connected = False
     subscribed_tracks: set[str] = set()
     track_tasks: set[asyncio.Task] = set()
@@ -193,6 +214,9 @@ async def run_local_audio(
 
         async def add_track() -> None:
             try:
+                await output_ready.wait()
+                if output_player is None:
+                    return
                 await output_player.add_track(track)
                 logger.info("Subscribed to agent audio track")
             except Exception:
@@ -205,7 +229,13 @@ async def run_local_audio(
 
     def track_unsubscribed(track, _publication, _participant) -> None:
         subscribed_tracks.discard(track.sid)
-        task = asyncio.create_task(output_player.remove_track(track))
+
+        async def remove_track() -> None:
+            await output_ready.wait()
+            if output_player is not None:
+                await output_player.remove_track(track)
+
+        task = asyncio.create_task(remove_track())
         track_tasks.add(task)
         task.add_done_callback(track_tasks.discard)
 
@@ -216,11 +246,7 @@ async def run_local_audio(
     room.on("disconnected", lambda *_: stopping.set())
 
     try:
-        # Prepare the selected output before the room can deliver an agent
-        # track, so an early subscription callback cannot race initialization.
-        output_player = media.open_output(output_device=output_index)
-        await output_player.start()
-        # Connect before starting capture so no microphone samples are sent to
+        # Connect before opening capture so no microphone samples are sent to
         # a room until its signed identity and authorized agent dispatch exist.
         await room.connect(livekit_url, room_info.token)
         connected = True
@@ -228,13 +254,12 @@ async def run_local_audio(
             participant_connected(participant)
         logger.info("Waiting for the Conversationalist agent before opening the microphone")
         await wait_for_agent(agent_ready, stopping)
-        input_capture = media.open_input(
-            input_device=input_index,
-            enable_aec=True,
-            noise_suppression=True,
-            high_pass_filter=True,
-            auto_gain_control=True,
+        # LiveKit's AEC output player must be created after input capture so it
+        # can feed speaker audio into the microphone's acoustic echo canceller.
+        input_capture, output_player = await _open_duplex_audio(
+            media, input_device=input_index, output_device=output_index,
         )
+        output_ready.set()
         microphone = rtc.LocalAudioTrack.create_audio_track(
             "system-microphone", input_capture.source,
         )
@@ -253,6 +278,9 @@ async def run_local_audio(
         )
         await stopping.wait()
     finally:
+        # Unblock any early track callbacks if setup failed before the player
+        # became available; those callbacks safely no-op when it is absent.
+        output_ready.set()
         if input_capture is not None:
             try:
                 await input_capture.aclose()
