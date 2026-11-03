@@ -257,3 +257,23 @@ independent work is still outstanding: capturing bounded outgoing PCM
 envelopes with validated playout timing; deriving safe speech offsets using
 the pinned Reachy `speech_tapper` or equivalent; and composing them under
 the one existing SDK motion owner without racing the recorded gestures.
+
+
+## Optional outgoing TTS envelope preview
+
+A separate opt-in CONVERSATIONALIST_OUTGOING_SPEECH_ENVELOPE=1 observes outgoing
+16-bit synthesized PCM through LiveKit Agent.default.tts_node and passes
+original AudioFrame objects unchanged to the only existing LiveKit output.
+RMS/VAD analysis is done **once** in Conversationalist. A versioned,
+content-free 50 ms feature stream travels over the existing authorized room
+MCP connection via its optional ensemble_speech_envelope tool. The Puppeteer
+receiver stores read-only presence-independent preview and per-performer
+dimensionless channels; it does not actuate motors.
+
+The bridge is explicitly best-effort; missing SDK/tool, format mismatch,
+backpressure or connection failure must not alter audio output and never
+triggers a motion retry. This does not establish EMEET/browser physical
+playout times, neutral/sleep settling, or authorization for audio-reactive
+hardware. No microphone samples, transcripts or raw PCM cross the MCP
+boundary. Operator qualification and the independent PR #20 neutral-return
+gate remain unresolved.

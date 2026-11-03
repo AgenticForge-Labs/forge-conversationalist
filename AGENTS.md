@@ -102,3 +102,19 @@ PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 i
   interruption and uncertain STOP quarantine. Never pass raw PCM to robots.
 - The analyzer alone is not integrated into a live room, authorized for
   physical motion, or synchronized to a speaker; each stage must be explicit.
+
+
+## LiveKit outgoing PCM observation (opt-in preview only)
+
+- CONVERSATIONALIST_OUTGOING_SPEECH_ENVELOPE=1 wraps only outgoing synthesized
+  TTS frames with the default LiveKit Agent.tts_node stream; original audio
+  frames still flow directly to LiveKit. No second sink, decoder, media engine,
+  microphone capture or speaker controller is created.
+- The existing authorized EnsembleSession negotiates an optional
+  ensemble_speech_envelope tool and offers at most eight content-free hops
+  per MCP batch without blocking voice or saturating important presence events.
+  Queue pressure disables that stream's observation; it is never retried.
+- Frame offsets are generated PCM time, not measured actual speaker playout.
+  No robot motion, physical clearance or STOP/rearm authorization is implied.
+- Preserve existing unknown-action quarantine. A late PCM batch must not be
+  allowed to rearm or move a performer. Puppeteer currently only previews.

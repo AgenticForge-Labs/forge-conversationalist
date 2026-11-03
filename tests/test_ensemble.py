@@ -266,3 +266,79 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+def test_optional_outgoing_speech_features_use_existing_room_queue(tmp_path):
+    class RunningTask:
+        def done(self):
+            return False
+
+    room = EnsembleSession(
+        PuppeteerEnsembleConfig(operator_file(tmp_path)),
+        room_id="room-1", caller_id="authorized",
+        outgoing_speech_envelope=True,
+    )
+    room._task = RunningTask()
+    room._speech_capable = True
+    packet = {
+        "schema": "forge.speech_envelope.v1",
+        "stream_id": "tts-1", "sequence": 0, "offset_ms": 0,
+        "duration_ms": 50, "active": True, "intensity": 0.5,
+        "rms_dbfs": -20.0, "timing_source": "generated_pcm",
+        "acoustic_playout_measured": False,
+    }
+    assert room.offer_speech_envelope([packet]) is True
+    tool, args, future = room._queue.get_nowait()
+    assert tool == "ensemble_speech_envelope"
+    assert args == {"session_id": "room-1", "frames": [packet]}
+    assert future is None
+    assert room._closed is False
+
+
+def test_optional_audio_queue_backpressure_never_disables_conversation(tmp_path):
+    class RunningTask:
+        def done(self):
+            return False
+
+    room = EnsembleSession(
+        PuppeteerEnsembleConfig(operator_file(tmp_path)),
+        room_id="room-1", caller_id="authorized",
+        outgoing_speech_envelope=True,
+    )
+    room._task = RunningTask()
+    room._speech_capable = True
+    for index in range(24):
+        assert room.offer_speech_envelope([{
+            "stream_id": "tts-1", "sequence": index,
+        }])
+    assert room.offer_speech_envelope([{
+        "stream_id": "tts-1", "sequence": 24,
+    }]) is False
+    assert room._closed is False
+    assert room._queue.qsize() == 24
+    assert room.offer_speech_envelope([{
+        "stream_id": "tts-1", "sequence": 25,
+    }]) is False
+    # Even when the stream is dropped, urgent presence retains space in
+    # the same queue. Optional features never create a parallel MCP child.
+    room.observe("listening", interrupted=True)
+    assert room._closed is False
+    assert room._queue.qsize() == 25
+
+
+def test_audio_ingress_is_inert_without_capability_and_explicit_opt_in(tmp_path):
+    class RunningTask:
+        def done(self):
+            return False
+
+    config = PuppeteerEnsembleConfig(operator_file(tmp_path))
+    disabled = EnsembleSession(config, room_id="r", caller_id="c")
+    disabled._task = RunningTask()
+    disabled._speech_capable = True
+    assert disabled.offer_speech_envelope([{"stream_id": "one"}]) is False
+    enabled = EnsembleSession(
+        config, room_id="r", caller_id="c",
+        outgoing_speech_envelope=True,
+    )
+    enabled._task = RunningTask()
+    assert enabled.offer_speech_envelope([{"stream_id": "one"}]) is False

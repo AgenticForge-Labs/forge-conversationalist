@@ -113,7 +113,10 @@ class PuppeteerEnsembleConfig:
 class EnsembleSession:
     """MCP stdio lifecycle and serialized, non-retrying semantic room events."""
 
-    def __init__(self, config: PuppeteerEnsembleConfig, *, room_id: str, caller_id: str):
+    def __init__(
+        self, config: PuppeteerEnsembleConfig, *, room_id: str, caller_id: str,
+        outgoing_speech_envelope: bool = False,
+    ):
         if not room_id or not caller_id:
             raise ValueError("authorized LiveKit room and caller are required for physical ensemble")
         self.config = config
@@ -126,6 +129,9 @@ class EnsembleSession:
         self._task: asyncio.Task | None = None
         self._ready: asyncio.Future | None = None
         self._closed = False
+        self._outgoing_speech_envelope = outgoing_speech_envelope
+        self._speech_capable = False
+        self._speech_drop_stream: str | None = None
 
     def _presence(self, state: str, *, source: Literal["agent_state", "playback"] = "agent_state",
                   interrupted: bool = False) -> dict:
@@ -162,6 +168,11 @@ class EnsembleSession:
             raise ValueError("invalid ensemble presence or timing source")
         if self._closed or self._task is None or self._task.done():
             return
+        if interrupted or state != "speaking":
+            # A new stream must be explicitly created by the next TTS node.
+            # Any already queued feature batch is still preview-only; it can
+            # never bypass Puppeteer motion quarantine or trigger a motor.
+            self._speech_drop_stream = None
         self._last_state = state
         self._last_source = source
         args = self._presence(state, source=source, interrupted=interrupted)
@@ -175,6 +186,42 @@ class EnsembleSession:
                 "enqueued_at_monotonic_ns": time.monotonic_ns(),
             },
         )
+
+
+    def offer_speech_envelope(self, frames: list[dict[str, object]]) -> bool:
+        """Best-effort feature-only path; it NEVER blocks or disables a voice room.
+
+        Admission merely enqueues generated-PCM observations to the same
+        room-owned MCP child. A failed batch disables observation for that
+        synthesized stream; no skipped sequence is ever silently repaired.
+        """
+        if (
+            not self._outgoing_speech_envelope or not self._speech_capable
+            or self._closed or self._task is None or self._task.done()
+            or not isinstance(frames, list) or not 1 <= len(frames) <= 8
+        ):
+            return False
+        stream_id = frames[0].get("stream_id") if isinstance(frames[0], dict) else None
+        if not isinstance(stream_id, str) or not stream_id:
+            return False
+        if self._speech_drop_stream == stream_id:
+            return False
+        if self._queue.qsize() >= 24:
+            self._speech_drop_stream = stream_id
+            logger.warning("Optional speech envelope dropped under MCP queue backpressure")
+            return False
+        if self._speech_drop_stream != stream_id:
+            self._speech_drop_stream = None
+        try:
+            self._queue.put_nowait((
+                "ensemble_speech_envelope",
+                {"session_id": self.room_id, "frames": frames},
+                None,
+            ))
+        except asyncio.QueueFull:
+            self._speech_drop_stream = stream_id
+            return False
+        return True
 
     async def start(self) -> dict:
         if self._task is not None:
@@ -222,6 +269,11 @@ class EnsembleSession:
                 names = {tool.name for tool in (await session.list_tools()).tools}
                 if not TOOLS <= names:
                     raise RuntimeError("Puppeteer three-performer MCP contract unavailable")
+                self._speech_capable = (
+                    self._outgoing_speech_envelope and "ensemble_speech_envelope" in names
+                )
+                if self._outgoing_speech_envelope and not self._speech_capable:
+                    logger.warning("Puppeteer does not support optional speech envelope; voice continues")
                 status = await self._call(session, "ensemble_state", {})
                 if (
                     status.get("schema") != SCHEMA
@@ -251,6 +303,8 @@ class EnsembleSession:
                         if future is not None and not future.done():
                             future.set_result({})
                         break
+                    if tool == "ensemble_speech_envelope" and not self._speech_capable:
+                        continue
                     is_presence = tool == "ensemble_presence"
                     if is_presence:
                         call_fields = {
@@ -278,6 +332,8 @@ class EnsembleSession:
                             "accepted", "duplicate",
                         }:
                             logger.warning("Puppeteer ensemble presence denied: %s", value.get("reason"))
+                        elif tool == "ensemble_speech_envelope" and value.get("outcome") != "observed":
+                            logger.warning("Optional speech envelope observation unconfirmed")
                     except Exception as exc:  # noqa: BLE001 - MCP transport exceptions are arbitrary
                         if is_presence:
                             logger.warning(
