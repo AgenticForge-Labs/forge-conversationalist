@@ -31,6 +31,7 @@ from .personality import DEFAULT, Personality, load_personality
 from .playback_presence import PlaybackPresence
 from .robot_rpc import register_robot_rpc
 from .speech_catalog import selected_speech_model
+from .speech_envelope_tap import agent_class_with_speech_envelope
 from .text_hook import install_assistant_text_hook, install_session_state_hook
 from .transcript_rpc import register_transcript_rpc
 
@@ -247,12 +248,14 @@ async def entrypoint(ctx: object) -> None:
         await embodiment.start()  # Fake-only discovery and MCP handshake; no SDK device.
         ctx.add_shutdown_callback(embodiment.close)
 
+    envelope_opt_in = os.getenv("CONVERSATIONALIST_OUTGOING_SPEECH_ENVELOPE") == "1"
     ensemble = None
     if agent_integrations.ensemble is not None:
         ensemble = EnsembleSession(
             agent_integrations.ensemble,
             room_id=room_name,
             caller_id=authorized_identity,
+            outgoing_speech_envelope=envelope_opt_in,
         )
         ctx.add_shutdown_callback(ensemble.close)
 
@@ -301,7 +304,13 @@ async def entrypoint(ctx: object) -> None:
             logger.exception("Puppeteer ensemble unavailable; continuing without robot tools")
             agent_integrations = replace(agent_integrations, ensemble=None)
             ensemble = None
-    agent = Agent(
+    # An opt-in TTS node observes generated PCM without changing LiveKit
+    # playback; missing Puppeteer support leaves the ordinary agent path.
+    agent_class = (
+        agent_class_with_speech_envelope(Agent, ensemble.offer_speech_envelope)
+        if envelope_opt_in and ensemble is not None else Agent
+    )
+    agent = agent_class(
         instructions=_room_instructions(
             agent_integrations, caller_id=authorized_identity, session_id=room_name,
             personality=personality,
