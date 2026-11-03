@@ -39,7 +39,7 @@ def _presence_timing_fields(args: dict) -> dict[str, object]:
 
 @dataclass(frozen=True)
 class PuppeteerEnsembleConfig:
-    """Operator-owned three-native-SDK configuration for an attended session."""
+    """Operator-owned exact native performer selection for an attended room."""
 
     config_path: Path
     command: str = "forge-puppeteer-ensemble"
@@ -66,7 +66,7 @@ class PuppeteerEnsembleConfig:
         if not isinstance(data, dict):
             raise TypeError("PUPPETEER_ENSEMBLE_CONFIG must contain an object")
         if (
-            data.get("schema_version") not in (1, 2)
+            data.get("schema_version") not in (1, 2, 3)
             or type(data.get("schema_version")) is not int
             or data.get("motion_authority") != "I_AUTHORIZE_ENSEMBLE_ROBOT_MOTION"
         ):
@@ -78,14 +78,25 @@ class PuppeteerEnsembleConfig:
             reachy.get("backend") != "reachy_sdk" or reachy.get("device") != "reachy"
         ):
             raise ValueError("Puppeteer ensemble must use native SDK providers")
-        if data["schema_version"] == 1:
-            if not isinstance(stackchan, dict) or not isinstance(arm, dict) or (
+        if data["schema_version"] in (1, 3):
+            if not isinstance(stackchan, dict) or (
                 stackchan.get("backend") != "stackchan_sdk"
                 or stackchan.get("device") != "stackchan"
-                or arm.get("mode") not in {"simulation", "attended_physical_trial"}
             ):
-                raise ValueError("Puppeteer ensemble requires all three native device profiles")
-            ids = (reachy.get("instance_id"), stackchan.get("instance_id"), arm.get("instance_id"))
+                raise ValueError("Puppeteer ensemble requires an explicit native StackChan")
+            if data["schema_version"] == 1:
+                if not isinstance(arm, dict) or arm.get("mode") not in {
+                    "simulation", "attended_physical_trial",
+                }:
+                    raise ValueError("three-robot ensemble requires SO-ARM101")
+                ids = (
+                    reachy.get("instance_id"), stackchan.get("instance_id"),
+                    arm.get("instance_id"),
+                )
+            else:
+                if "soarm101" in data:
+                    raise ValueError("two-robot ensemble cannot declare SO-ARM101")
+                ids = (reachy.get("instance_id"), stackchan.get("instance_id"))
         else:
             if "stackchan" in data or "soarm101" in data:
                 raise ValueError("Reachy-only deployment cannot include other devices")
@@ -268,7 +279,7 @@ class EnsembleSession:
                 phase = "verify_contract"
                 names = {tool.name for tool in (await session.list_tools()).tools}
                 if not TOOLS <= names:
-                    raise RuntimeError("Puppeteer three-performer MCP contract unavailable")
+                    raise RuntimeError("Puppeteer room MCP contract unavailable")
                 self._speech_capable = (
                     self._outgoing_speech_envelope and "ensemble_speech_envelope" in names
                 )
