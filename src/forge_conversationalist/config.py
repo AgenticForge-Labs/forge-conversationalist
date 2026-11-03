@@ -95,6 +95,11 @@ def load_profile(environ: dict[str, str] | None = None) -> CloudProfile:
         stage: e.get(f"CONVERSATIONALIST_{stage.upper()}_PROVIDER", default)
         for stage, default in zip(("stt", "llm", "tts"), _PRESETS[preset], strict=True)
     }
+    # 4G uses the already selected HeyGen/Lucian voice unless the operator
+    # explicitly chooses another TTS provider. STT and LLM follow the preset.
+    if (e.get("CONVERSATIONALIST_PERSONALITY", "default").strip().lower() == "4g"
+            and "CONVERSATIONALIST_TTS_PROVIDER" not in e):
+        providers["tts"] = "openrouter"
     for stage, provider in providers.items():
         if provider not in _PROVIDERS:
             raise ValueError(f"CONVERSATIONALIST_{stage.upper()}_PROVIDER is invalid")

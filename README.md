@@ -12,6 +12,23 @@ PR #3 merged device-independent presentation signals and optional browser
 microphone/speaker selection. It does **not** add a Platform subscription,
 robot motion, or a new realtime audio engine.
 
+### 4G personality
+
+Set `CONVERSATIONALIST_PERSONALITY=4g` in the worker environment for one
+shared 4G conversation. This selects the 4G identity, company background,
+speaking style and source/permission guidance; it does not grant tools or
+enable any robot. The worker's existing authenticated MCP allowlist and
+server-side grants still determine available company tools. Configure the
+4G defaults to OpenRouter's HeyGen Voice Turbo (`heygen/heygen-voice-1-turbo`)
+with `lucian`, requiring `OPENROUTER_API_KEY`; STT and LLM follow the selected
+preset. Explicit TTS settings and authorized per-room voice selection can
+override that default.
+
+This is an adaptation of the stock profile for a device-independent LiveKit
+session, not full feature parity: Reachy-specific tools, Business Engine
+WorkItem adapters, notifications and the stock hosted voice remain separate.
+The greeting deliberately does not assert that company services are healthy.
+
 ## Run the voice application
 
 1. Create a LiveKit Cloud project. Copy `.env.example` to root `.env.local`.
@@ -48,6 +65,19 @@ HttpOnly, same-site cookie and automatically connects on later visits. The
 cookie is scoped to the local session API, checked with same-origin protection,
 and is never readable by page JavaScript. Clearing site cookies asks for the
 token again.
+
+For a trusted workstation where anyone able to use the local browser may
+start a conversation, local development can sign in automatically. Start the
+web server **bound only to loopback**, with the flag set on that process:
+
+```bash
+CONVERSATIONALIST_LOCAL_AUTO_LOGIN=true npm run dev -- --hostname 127.0.0.1
+```
+
+Then open `http://localhost:3000`. This opt-in works only in development
+for same-origin localhost requests. It bypasses the access-token prompt for
+local users; never expose this server on a network or enable the flag on a
+shared or untrusted workstation. LiveKit credentials stay on the server.
 
 The OpenRouter preset defaults to HeyGen Voice Turbo with the `lucian` voice,
 using mono PCM at 44.1 kHz. The model and voice can still be changed per room.

@@ -27,6 +27,7 @@ from .config import (
 from .embodiment import EmbodimentSession
 from .ensemble import EnsembleSession
 from .integrations import load_integrations
+from .personality import DEFAULT, Personality, load_personality
 from .speech_catalog import selected_speech_model
 from .text_hook import install_assistant_text_hook, install_session_state_hook
 from .transcript_rpc import register_transcript_rpc
@@ -185,6 +186,7 @@ async def entrypoint(ctx: object) -> None:
 
     metadata = getattr(ctx.job, "metadata", "")
     profile = load_profile()
+    personality = load_personality()
     requested_model = _requested_speech_model(metadata)
     selected_model = None
     if requested_model is not None:
@@ -256,7 +258,8 @@ async def entrypoint(ctx: object) -> None:
     install_session_state_hook(session, handle_state)
     agent = Agent(
         instructions=_room_instructions(
-            agent_integrations, caller_id=authorized_identity, session_id=room_name
+            agent_integrations, caller_id=authorized_identity, session_id=room_name,
+            personality=personality,
         ),
         tools=build_assistant_tools(
             agent_integrations,
@@ -294,7 +297,7 @@ async def entrypoint(ctx: object) -> None:
     # A fixed greeting needs TTS only. Asking the LLM to generate it with only
     # system instructions fails on providers that require a user query and
     # creates an unnecessary model request.
-    await session.say("Hello! I'm here to help.")
+    await session.say(personality.greeting)
 
 
 def _room_instructions(
@@ -302,11 +305,16 @@ def _room_instructions(
     *,
     caller_id: str | None,
     session_id: str | None,
+    personality: Personality = DEFAULT,
 ) -> str:
     """Add only the operator-pinned Reachy move IDs to this room's guidance."""
+    base = INSTRUCTIONS
+    if personality.instructions:
+        base = base.replace("You are Forge Conversationalist, a helpful spoken assistant. ", "")
+        base = personality.instructions + " " + base
     config = getattr(integrations, "puppeteer_stdio", None)
     if getattr(integrations, "ensemble", None) is not None:
-        return INSTRUCTIONS + (
+        return base + (
             " One operator-authorized Puppeteer room may mirror approximate "
             "listening/speaking/idle states across three performers. These states "
             "are not speech sample timestamps, nor are robot movements evidence "
@@ -318,7 +326,7 @@ def _room_instructions(
         )
     if config is None:
         if getattr(integrations, "embodiment", None) is not None:
-            return INSTRUCTIONS + (
+            return base + (
                 " A fake-only Puppeteer embodiment is configured. Use "
                 "discover_performer to list its exact simulated expression names "
                 "and revisions, and request_performer_expression only when a "
@@ -328,7 +336,7 @@ def _room_instructions(
                 "Speaking/listening state is approximate, not a confirmed audio "
                 "playback clock."
             )
-        return INSTRUCTIONS
+        return base
     pins = ", ".join(f"{asset_id} ({revision})" for asset_id, revision in config.approved_moves)
     available = set(config.allowed_tools)
     guidance = (
@@ -344,7 +352,7 @@ def _room_instructions(
     )
     if "device_stop" in available:
         guidance += " Call device_stop only when the user explicitly asks to stop Reachy."
-    return INSTRUCTIONS + guidance
+    return base + guidance
 
 
 def _authorized_identity(metadata: str) -> str | None:

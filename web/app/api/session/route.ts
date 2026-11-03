@@ -4,6 +4,7 @@ import { ParticipantInfo_Kind, RoomAgentDispatch, RoomConfiguration } from "@liv
 import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { fetchAffordableSpeechModels } from "@/lib/openrouter-tts";
 import { decodeSessionBinding, encodeSessionBinding } from "@/lib/session-binding.mjs";
+import { allowsLocalAutoLogin } from "@/lib/local-auto-login.mjs";
 
 export const runtime = "nodejs";
 
@@ -43,6 +44,16 @@ export async function GET(request: NextRequest) {
   const configured = process.env.CONVERSATIONALIST_ACCESS_TOKEN;
   if (!configured || configured.length < 32) {
     return NextResponse.json({ error: "Server is not configured" }, { status: 503 });
+  }
+  if (allowsLocalAutoLogin({
+    enabled: process.env.CONVERSATIONALIST_LOCAL_AUTO_LOGIN,
+    nodeEnv: process.env.NODE_ENV,
+    hostname: request.nextUrl.hostname,
+    fetchSite: request.headers.get("sec-fetch-site"),
+  })) {
+    const response = NextResponse.json({ authorized: true }, { headers: { "Cache-Control": "no-store" } });
+    response.cookies.set(ACCESS_COOKIE, configured, cookieOptions(request));
+    return response;
   }
   if (!requestHasValidCookie(request, configured)) {
     return NextResponse.json({ authorized: false }, { status: 401, headers: { "Cache-Control": "no-store" } });
