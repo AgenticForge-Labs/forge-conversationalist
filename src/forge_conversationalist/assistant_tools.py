@@ -119,18 +119,23 @@ def build_assistant_tools(
             Only when a person explicitly requests a physical gesture. Never
             infer success from accepted admission; no automatic retry.
             """
-            return json.dumps(await ensemble_session.express(name))
+            result = await ensemble_session.express(name)
+            if result.get("outcome") == "accepted":
+                result = {**result, "completion": "unconfirmed",
+                          "spoken_guidance": "The gesture was requested, not confirmed complete. Do not say it happened; check status or report that its outcome is unconfirmed."}
+            return json.dumps(result)
 
         tools.extend([
             function_tool_factory(
                 get_ensemble_status, name="get_ensemble_status",
-                description="Read three-performer Puppeteer status and individual device evidence.",
+                description="Read Puppeteer room status and individual configured performer evidence.",
             ),
             function_tool_factory(
                 request_ensemble_gesture, name="request_ensemble_gesture",
                 description=(
                     "On an explicit user request, request one approved yes/no/acknowledge/neutral "
-                    "gesture for the three performers. Admission is not physical completion."
+                    "gesture for configured performers. Admission is not physical completion; "
+                    "never say it happened unless its completion has been independently confirmed."
                 ),
             ),
         ])

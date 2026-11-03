@@ -12,6 +12,7 @@ from forge_conversationalist.agent import (
     _profile_for_job,
     _register_voice_rpc,
     _requested_qwen_voice,
+    _requested_turn_pacing,
     _requested_vad_sensitivity,
     build_voice_session,
     entrypoint,
@@ -63,6 +64,33 @@ def test_entrypoint_uses_tts_only_greeting_without_an_llm_request() -> None:
     session.generate_reply.assert_not_called()
 
 
+def test_ensemble_startup_failure_keeps_voice_and_removes_robot_tools() -> None:
+    session = SimpleNamespace(start=AsyncMock(), say=AsyncMock(), on=Mock(), history=[])
+    robot = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError("unavailable")),
+                            close=AsyncMock())
+    tool_builder = Mock(return_value=[])
+    room = SimpleNamespace(name="room", local_participant=Mock())
+    ctx = SimpleNamespace(
+        room=room, job=SimpleNamespace(metadata='{"authorized_identity":"person"}'),
+        connect=AsyncMock(), add_shutdown_callback=Mock(),
+    )
+    with (
+        patch("forge_conversationalist.agent.load_profile", return_value=CloudProfile()),
+        patch("forge_conversationalist.agent.load_integrations", return_value=Integrations(ensemble=object())),
+        patch("forge_conversationalist.agent.build_voice_session", return_value=session),
+        patch("forge_conversationalist.agent.EnsembleSession", return_value=robot),
+        patch("forge_conversationalist.agent.build_assistant_tools", tool_builder),
+        patch("forge_conversationalist.agent.register_transcript_rpc"),
+        patch("forge_conversationalist.agent._register_voice_rpc"),
+    ):
+        asyncio.run(entrypoint(ctx))
+    robot.start.assert_awaited_once()
+    session.start.assert_awaited_once()
+    assert tool_builder.call_args.args[0].ensemble is None
+    assert tool_builder.call_args.kwargs["ensemble_session"] is None
+    session.say.assert_awaited_once()
+
+
 def test_legacy_qwen_voice_metadata_stays_pinned_to_its_model() -> None:
     assert _requested_qwen_voice('{"tts_voice":"longanhuan_v3.6"}') == "longanhuan_v3.6"
     assert _requested_qwen_voice('{"tts_voice":"untrusted-value"}') is None
@@ -103,6 +131,31 @@ def test_job_vad_sensitivity_accepts_only_named_presets() -> None:
     assert _requested_vad_sensitivity('{"vad_sensitivity":[]}') == "standard"
     assert _requested_vad_sensitivity('{"vad_sensitivity":"unknown"}') == "standard"
     assert _requested_vad_sensitivity("not json") == "standard"
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ('{"turn_pacing":"quick"}', "quick"),
+    ('{"turn_pacing":"patient"}', "patient"),
+    ('{"turn_pacing":[]}', "standard"),
+    ('{"turn_pacing":"invalid"}', "standard"),
+])
+def test_turn_pacing_restricts_worker_metadata(value, expected):
+    assert _requested_turn_pacing(value) == expected
+
+
+@pytest.mark.parametrize(("pacing", "delay"), [("quick", 0.25), ("patient", 1.2)])
+def test_turn_pacing_configures_livekit_endpointing(pacing, delay):
+    constructors = SimpleNamespace(
+        STT=MagicMock(), LLM=MagicMock(), TTS=MagicMock(), TurnDetector=MagicMock(),
+    )
+    sdk = SimpleNamespace(inference=constructors, AgentSession=MagicMock(side_effect=lambda **x: x),
+                          TurnHandlingOptions=MagicMock(side_effect=lambda **x: x))
+    fake_silero = SimpleNamespace(VAD=SimpleNamespace(load=MagicMock()))
+    with patch.dict("sys.modules", {"livekit.plugins.silero": fake_silero}):
+        session = build_voice_session(CloudProfile(), sdk=sdk, turn_pacing=pacing)
+    assert session["turn_handling"]["endpointing"] == {
+        "mode": "fixed", "min_delay": delay, "max_delay": delay,
+    }
 
 
 def test_live_voice_rpc_updates_tts_for_only_authorized_participant() -> None:

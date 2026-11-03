@@ -10,6 +10,7 @@ export const runtime = "nodejs";
 
 const AGENT_NAME = "forge-conversationalist";
 const VAD_SENSITIVITIES = ["less", "standard", "more"] as const;
+const TURN_PACINGS = ["quick", "standard", "patient"] as const;
 const ACCESS_COOKIE = "forge_conversationalist_access";
 const SESSION_COOKIE = "forge_conversationalist_session";
 const ACCESS_COOKIE_AGE = 60 * 60 * 24 * 30;
@@ -88,6 +89,7 @@ export async function POST(request: NextRequest) {
   let requestedVoice: unknown;
   let requestedModel: unknown;
   let requestedVadSensitivity: unknown;
+  let requestedTurnPacing: unknown;
   const rawBody = await request.text();
   if (rawBody) {
     try {
@@ -100,6 +102,9 @@ export async function POST(request: NextRequest) {
       }
       if (body && typeof body === "object" && "vadSensitivity" in body) {
         requestedVadSensitivity = body.vadSensitivity;
+      }
+      if (body && typeof body === "object" && "turnPacing" in body) {
+        requestedTurnPacing = body.turnPacing;
       }
     } catch {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
@@ -134,6 +139,9 @@ export async function POST(request: NextRequest) {
     && !VAD_SENSITIVITIES.includes(requestedVadSensitivity as typeof VAD_SENSITIVITIES[number])
   ) {
     return NextResponse.json({ error: "Unsupported VAD sensitivity" }, { status: 400 });
+  }
+  if (requestedTurnPacing !== undefined && !TURN_PACINGS.includes(requestedTurnPacing as typeof TURN_PACINGS[number])) {
+    return NextResponse.json({ error: "Unsupported turn pacing" }, { status: 400 });
   }
 
   // The signed HttpOnly cookie binds an authenticated browser to its existing
@@ -179,6 +187,7 @@ export async function POST(request: NextRequest) {
     ...(requestedSpeechModel ? { tts_model: requestedSpeechModel.id } : {}),
     ...(requestedVoice ? { tts_voice: requestedVoice } : {}),
     ...(requestedVadSensitivity ? { vad_sensitivity: requestedVadSensitivity } : {}),
+    ...(requestedTurnPacing ? { turn_pacing: requestedTurnPacing } : {}),
     authorized_identity: sessionIdentity,
   };
   if (!resumeExistingRoom) {

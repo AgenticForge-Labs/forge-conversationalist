@@ -76,6 +76,12 @@ validates the entire exact approval list, host/SDK connection settings,
 workspace, physical calibration, and watchdog. Conversationalist does
 not accept a tool parameter to change these.
 
+The matching Puppeteer Reachy-only configuration (`schema_version: 2`)
+contains a single native Reachy identity and no StackChan or SO-ARM fields.
+The worker checks that exact identity at discovery; it does not fabricate
+the missing performers or grant them physical authority. This requires the
+Puppeteer release that implements the corresponding version 2 launcher.
+
 Do **not** set `PUPPETEER_MCP_CONFIG` or
 `PUPPETEER_EMBODIMENT_CONFIG` in the same worker deployment while
 native ensemble mode is enabled; this is rejected so that an
@@ -93,6 +99,11 @@ Puppeteer SDK child. At startup, the child must advertise the exact
 three named MCP tools, the `forge.behavior.v1` schema, an unoccupied
 room and matching performer identities.
 
+If this optional child cannot start or fails discovery, the worker logs the
+failure and starts voice without ensemble instructions or robot tools. It
+does not retry or rearm the performer; the operator must reconcile any
+unknown physical action before a later attempt.
+
 The state hook sends one monotonically sequenced, content-free
 `ensemble_presence` event for each LiveKit state change and refreshes
 the latest state approximately every 10 seconds. The source is
@@ -103,6 +114,12 @@ performer arbitration handle gaps and denied events. An unavailable
 device is visible independently; the worker must not claim all three
 physically followed a cue.
 
+When a user-speaking callback arrives while the hook still reports the
+agent as speaking, the listening event is marked interrupted so Puppeteer
+uses its immediate interruption path. Callback ordering can prevent this
+overlap from being observed; it is not a measured audio interruption or
+evidence that a physical STOP has completed.
+
 The LLM may read `get_ensemble_status`; it can use
 `request_ensemble_gesture` **only if the user explicitly asks for**
 one of `yes`, `no`, `acknowledge`, `neutral`. Ordinary
@@ -112,6 +129,9 @@ and is never automatically retried on an ambiguous outcome. Accepted
 MCP admission is not movement completion. Shutdown attempts
 `disconnected`; a missing acknowledgement is logged, not interpreted
 as STOP/HOLD.
+An accepted gesture response explicitly reports completion as unconfirmed;
+the assistant must not claim that it happened or that a blocked robot will
+settle or resume by itself.
 
 ## Tests and attended acceptance
 

@@ -144,6 +144,7 @@ def test_livekit_state_events_map_and_dedupe_generic_presence() -> None:
         ("speaking", "user"),
         ("idle", "agent"),
     ]
+    assert [item.interrupted for item in states] == [False, False, True, False, False]
 
 
 def test_state_hook_registers_and_removes_both_livekit_events() -> None:
