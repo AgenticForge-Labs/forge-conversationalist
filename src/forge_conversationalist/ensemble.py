@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 SCHEMA = "forge.behavior.v1"
 TOOLS = frozenset({"ensemble_state", "ensemble_presence", "ensemble_expression"})
 STATES = frozenset({"idle", "listening", "speaking"})
-EXPRESSIONS = frozenset({"yes", "no", "acknowledge", "neutral"})
 
 
 @dataclass(frozen=True)
@@ -258,12 +257,31 @@ class EnsembleSession:
     async def status(self) -> dict:
         return await self._request("ensemble_state", {})
 
-    async def express(self, name: str) -> dict:
-        if name not in EXPRESSIONS:
-            return {"outcome": "unsupported", "reason": "unknown_semantic_gesture"}
-        # The model cannot select arbitrary performer IDs or joint commands.
+    async def express(self, name: str, performer_id: str) -> dict:
+        """Request one exact catalogued finite expression for one pinned performer.
+
+        This is the SAME serialized MCP room and runtime as automatic
+        presence. Discovery is read-only, not permission: Puppeteer and the
+        native SDK independently revalidate ownership, assets and authority.
+        """
+        if (not isinstance(name, str) or not 1 <= len(name) <= 64
+                or not isinstance(performer_id, str)
+                or performer_id not in self.config.performer_ids):
+            return {"outcome": "unsupported", "reason": "unknown_performer_or_expression"}
+        if name in {*STATES, "disconnected"}:
+            return {"outcome": "unsupported", "reason": "presence_is_automatic"}
+        state = await self.status()
+        performers = state.get("performers")
+        details = performers.get(performer_id) if isinstance(performers, dict) else None
+        choices = details.get("expressions") if isinstance(details, dict) else None
+        if (not isinstance(choices, list) or name not in choices
+                or not all(isinstance(choice, str) for choice in choices)):
+            return {"outcome": "unsupported", "reason": "not_in_approved_performer_catalog"}
+        if details.get("status") in {"blocked", "unavailable"}:
+            return {"outcome": "denied", "reason": "performer_unavailable"}
         return await self._request("ensemble_expression", {
             "expression": name, "action_id": f"gesture-{uuid.uuid4().hex}",
+            "performer_ids": [performer_id],
         })
 
     async def close(self) -> None:
