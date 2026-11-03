@@ -179,6 +179,18 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(
         "from pathlib import Path\n"
         "from typing import TypedDict\n"
         "from mcp.server import MCPServer\n"
+        "from typing import TypedDict\n"
+        "class State(TypedDict):\n"
+        "    schema: str\n"
+        "    session_id: str | None\n"
+        "    state: str\n"
+        "    performers: dict[str, dict]\n"
+        "class Presence(TypedDict):\n"
+        "    outcome: str\n"
+        "    state: str\n"
+        "class Outcome(TypedDict):\n"
+        "    outcome: str\n"
+        "    expression: str\n"
         "class State(TypedDict):\n"
         "    schema: str\n"
         "    session_id: str | None\n"
@@ -396,17 +408,17 @@ async def test_duo_real_stdio_child_requires_exact_catalog(
         f"PERFORMERS = {expected!r}\n"
         "app = MCPServer('offline-duo-room')\n"
         "@app.tool()\n"
-        "async def ensemble_state() -> dict:\n"
+        "async def ensemble_state() -> State:\n"
         "    return {'schema': 'forge.behavior.v1', 'session_id': None,\n"
         "            'state': 'disconnected', 'performers': PERFORMERS}\n"
         "@app.tool()\n"
         "async def ensemble_presence(session_id: str, event_id: str,\n"
         "    sequence: int, state: str, source: str = 'agent_state',\n"
-        "    interrupted: bool = False) -> dict:\n"
+        "    interrupted: bool = False) -> Presence:\n"
         "    return {'outcome': 'accepted', 'state': state}\n"
         "@app.tool()\n"
         "async def ensemble_expression(expression: str, action_id: str,\n"
-        "    performer_ids: list[str] | None = None) -> dict:\n"
+        "    performer_ids: list[str] | None = None) -> Outcome:\n"
         "    return {'outcome': 'accepted', 'expression': expression}\n"
         "app.run(transport='stdio')\n",
         encoding="utf-8",
@@ -418,7 +430,7 @@ async def test_duo_real_stdio_child_requires_exact_catalog(
     )
     try:
         if extra_unconfigured_performer:
-            with pytest.raises(RuntimeError, match="unexpected room or performer"):
+            with pytest.raises(RuntimeError, match="verify_contract"):
                 await room.start()
         else:
             state = await room.start()
