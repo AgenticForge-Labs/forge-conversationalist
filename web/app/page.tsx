@@ -32,6 +32,8 @@ type RoomSpeechSettings = {
   editRevision: number;
   vadSensitivity: string;
   onVadSensitivityChange: (value: string) => void;
+  turnPacing: string;
+  onTurnPacingChange: (value: string) => void;
 };
 
 type MicrophoneMode = "continuous" | "press-to-talk";
@@ -475,6 +477,13 @@ function RoomConversation({ speech, microphoneMode, onMicrophoneModeChange, endi
           <option value="more">More sensitive</option>
         </select>
         <p className="subtle">Applies on the next conversation. Less sensitive requires stronger speech cues and may miss quiet speech; more sensitive can react to background noise.</p>
+        <label htmlFor="turn-pacing">Wait after you stop speaking</label>
+        <select id="turn-pacing" value={speech.turnPacing} onChange={(event) => speech.onTurnPacingChange(event.target.value)}>
+          <option value="quick">Shorter pause</option>
+          <option value="standard">Standard</option>
+          <option value="patient">Longer pause</option>
+        </select>
+        <p className="subtle">Applies on the next conversation. A longer pause gives you more time to think before 4G responds.</p>
       </fieldset>
       <fieldset className="device-chooser" disabled={changingSpeech}>
         <legend>Speech model and voice</legend>
@@ -558,6 +567,7 @@ export default function Home() {
   const [ttsVoice, setTtsVoice] = useState("");
   const [speechEditRevision, setSpeechEditRevision] = useState(0);
   const [vadSensitivity, setVadSensitivity] = useState("standard");
+  const [turnPacing, setTurnPacing] = useState("standard");
   const [microphoneMode, setMicrophoneMode] = useState<MicrophoneMode>("press-to-talk");
   const [microphoneModeReady, setMicrophoneModeReady] = useState(false);
   const [room, setRoom] = useState<RoomGrant | null>(null);
@@ -632,6 +642,7 @@ export default function Home() {
         body: JSON.stringify({
           ...(ttsModel ? { ttsModel, ttsVoice } : {}),
           vadSensitivity,
+          turnPacing,
         }),
       });
       const responseBody = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -732,7 +743,7 @@ export default function Home() {
             onError={() => setError("The LiveKit connection failed.")}
           >
             <RoomConversation
-              speech={{ models: ttsModels, catalogError: ttsCatalogError, model: ttsModel, voice: ttsVoice, onChange: changeSpeech, onEditStart: () => setSpeechEditRevision((revision) => revision + 1), editRevision: speechEditRevision, vadSensitivity, onVadSensitivityChange: setVadSensitivity }}
+              speech={{ models: ttsModels, catalogError: ttsCatalogError, model: ttsModel, voice: ttsVoice, onChange: changeSpeech, onEditStart: () => setSpeechEditRevision((revision) => revision + 1), editRevision: speechEditRevision, vadSensitivity, onVadSensitivityChange: setVadSensitivity, turnPacing, onTurnPacingChange: setTurnPacing }}
               microphoneMode={microphoneMode}
               onMicrophoneModeChange={changeMicrophoneMode}
               ending={ending}

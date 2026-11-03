@@ -57,6 +57,7 @@ def build_voice_session(
     profile: CloudProfile,
     *,
     vad_sensitivity: str = "standard",
+    turn_pacing: str = "standard",
     tts_sample_rate: int = 24000,
     sdk: object | None = None,
     openai_plugin: object | None = None,
@@ -79,6 +80,8 @@ def build_voice_session(
 
     if vad_sensitivity not in VAD_SENSITIVITY_THRESHOLDS:
         raise ValueError("vad_sensitivity must be less, standard, or more")
+    if turn_pacing not in {"quick", "standard", "patient"}:
+        raise ValueError("turn_pacing must be quick, standard, or patient")
 
     from livekit.plugins import silero
 
@@ -109,6 +112,9 @@ def build_voice_session(
     turn_handling = {
         "turn_detection": _build_turn_detector(sdk),
     }
+    if turn_pacing != "standard":
+        delay = 0.25 if turn_pacing == "quick" else 1.2
+        turn_handling["endpointing"] = {"mode": "fixed", "min_delay": delay, "max_delay": delay}
     if local_turn_model:
         # Adaptive interruption uses a separate LiveKit cloud endpoint.
         # Keep local runs fully on-device with the standard VAD strategy.
@@ -203,6 +209,7 @@ async def entrypoint(ctx: object) -> None:
     else:
         profile = _profile_for_job(profile, metadata)
     vad_sensitivity = _requested_vad_sensitivity(metadata)
+    turn_pacing = _requested_turn_pacing(metadata)
     integrations = load_integrations()
     authorized_identity = _authorized_identity(metadata)
     room_name = getattr(ctx.room, "name", None)
@@ -216,6 +223,7 @@ async def entrypoint(ctx: object) -> None:
     session = build_voice_session(
         profile,
         vad_sensitivity=vad_sensitivity,
+        turn_pacing=turn_pacing,
         tts_sample_rate=selected_model["sampleRate"] if selected_model else _default_tts_sample_rate(profile),
     )
     install_assistant_text_hook(
@@ -253,7 +261,7 @@ async def entrypoint(ctx: object) -> None:
         if embodiment is not None:
             embodiment.observe(signal.state)
         if ensemble is not None:
-            ensemble.observe(signal.state)
+            ensemble.observe(signal.state, interrupted=signal.interrupted)
 
     install_session_state_hook(session, handle_state)
     agent = Agent(
@@ -316,7 +324,7 @@ def _room_instructions(
     if getattr(integrations, "ensemble", None) is not None:
         return base + (
             " One operator-authorized Puppeteer room may mirror approximate "
-            "listening/speaking/idle states across three performers. These states "
+            "listening/speaking/idle states across its configured performers. These states "
             "are not speech sample timestamps, nor are robot movements evidence "
             "of completed company tasks. Use get_ensemble_status to inspect "
             "individual outcomes. Use request_ensemble_gesture only when the "
@@ -478,6 +486,15 @@ def _requested_vad_sensitivity(metadata: str) -> str:
         if isinstance(sensitivity, str) and sensitivity in VAD_SENSITIVITY_THRESHOLDS
         else "standard"
     )
+
+
+def _requested_turn_pacing(metadata: str) -> str:
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return "standard"
+    value = request.get("turn_pacing") if isinstance(request, dict) else None
+    return value if isinstance(value, str) and value in {"quick", "standard", "patient"} else "standard"
 
 
 def main() -> None:

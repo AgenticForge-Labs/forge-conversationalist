@@ -76,6 +76,12 @@ validates the entire exact approval list, host/SDK connection settings,
 workspace, physical calibration, and watchdog. Conversationalist does
 not accept a tool parameter to change these.
 
+The matching Puppeteer Reachy-only configuration (`schema_version: 2`)
+contains a single native Reachy identity and no StackChan or SO-ARM fields.
+The worker checks that exact identity at discovery; it does not fabricate
+the missing performers or grant them physical authority. This requires the
+Puppeteer release that implements the corresponding version 2 launcher.
+
 Do **not** set `PUPPETEER_MCP_CONFIG` or
 `PUPPETEER_EMBODIMENT_CONFIG` in the same worker deployment while
 native ensemble mode is enabled; this is rejected so that an

@@ -59,6 +59,9 @@ detector and adaptive interruption selection.
 The **Microphone sensitivity** setting adjusts Silero's speech activation
 threshold. Less sensitive may reject background sounds but can also miss quiet
 speech; Standard keeps the SDK default. Changes apply to the next conversation.
+The pause setting adjusts how long the turn detector waits after speech stops;
+shorter pauses respond sooner, while longer pauses allow more thinking time.
+It also applies to the next conversation.
 
 Enter the development access token once. The server saves it in a 30-day
 HttpOnly, same-site cookie and automatically connects on later visits. The

@@ -31,7 +31,7 @@ class PuppeteerEnsembleConfig:
 
     config_path: Path
     command: str = "forge-puppeteer-ensemble"
-    performer_ids: tuple[str, str, str] = field(init=False)
+    performer_ids: tuple[str, ...] = field(init=False)
     digest: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -54,7 +54,7 @@ class PuppeteerEnsembleConfig:
         if not isinstance(data, dict):
             raise TypeError("PUPPETEER_ENSEMBLE_CONFIG must contain an object")
         if (
-            data.get("schema_version") != 1
+            data.get("schema_version") not in (1, 2)
             or type(data.get("schema_version")) is not int
             or data.get("motion_authority") != "I_AUTHORIZE_ENSEMBLE_ROBOT_MOTION"
         ):
@@ -62,19 +62,24 @@ class PuppeteerEnsembleConfig:
         reachy = data.get("reachy")
         stackchan = data.get("stackchan")
         arm = data.get("soarm101")
-        if not all(isinstance(x, dict) for x in (reachy, stackchan, arm)):
-            raise ValueError("Puppeteer ensemble requires all three native device profiles")
-        if (
-            reachy.get("backend") != "reachy_sdk"
-            or reachy.get("device") != "reachy"
-            or stackchan.get("backend") != "stackchan_sdk"
-            or stackchan.get("device") != "stackchan"
-            or arm.get("mode") not in {"simulation", "attended_physical_trial"}
+        if not isinstance(reachy, dict) or (
+            reachy.get("backend") != "reachy_sdk" or reachy.get("device") != "reachy"
         ):
             raise ValueError("Puppeteer ensemble must use native SDK providers")
-        ids = (reachy.get("instance_id"), stackchan.get("instance_id"), arm.get("instance_id"))
-        if any(not isinstance(x, str) or not x for x in ids) or len(set(ids)) != 3:
-            raise ValueError("Puppeteer ensemble must pin three unique performer identities")
+        if data["schema_version"] == 1:
+            if not isinstance(stackchan, dict) or not isinstance(arm, dict) or (
+                stackchan.get("backend") != "stackchan_sdk"
+                or stackchan.get("device") != "stackchan"
+                or arm.get("mode") not in {"simulation", "attended_physical_trial"}
+            ):
+                raise ValueError("Puppeteer ensemble requires all three native device profiles")
+            ids = (reachy.get("instance_id"), stackchan.get("instance_id"), arm.get("instance_id"))
+        else:
+            if "stackchan" in data or "soarm101" in data:
+                raise ValueError("Reachy-only deployment cannot include other devices")
+            ids = (reachy.get("instance_id"),)
+        if any(not isinstance(x, str) or not x for x in ids) or len(set(ids)) != len(ids):
+            raise ValueError("Puppeteer ensemble must pin unique performer identities")
         for name in ("action_journal", "ownership_db", "reachy_neutral_head"):
             value = data.get(name)
             if not isinstance(value, str) or not Path(value).is_absolute():
@@ -131,14 +136,14 @@ class EnsembleSession:
             if future is not None and not future.done():
                 future.set_exception(RuntimeError("Puppeteer ensemble queue overflow"))
 
-    def observe(self, state: Literal["idle", "listening", "speaking"]) -> None:
+    def observe(self, state: Literal["idle", "listening", "speaking"], *, interrupted: bool = False) -> None:
         """Nonblocking LiveKit state hook, not measured voice playback time."""
         if state not in STATES:
             raise ValueError("invalid ensemble presence")
         if self._closed or self._task is None or self._task.done():
             return
         self._last_state = state
-        self._enqueue("ensemble_presence", self._presence(state))
+        self._enqueue("ensemble_presence", self._presence(state, interrupted=interrupted))
 
     async def start(self) -> dict:
         if self._task is not None:

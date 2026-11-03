@@ -39,6 +39,7 @@ class ConversationStateChanged:
 
     state: Literal["idle", "listening", "speaking"]
     source: Literal["agent", "user"]
+    interrupted: bool = False
 
 
 StateCallback = Callable[[ConversationStateChanged], None]
@@ -160,13 +161,17 @@ class SessionStateHook:
             mapped = "idle"
         else:
             return
-        self._emit(mapped, source)
+        interrupted = (
+            source == "user" and self._user_state == "speaking"
+            and self._agent_state == "speaking" and self._last_state == "speaking"
+        )
+        self._emit(mapped, source, interrupted=interrupted)
 
-    def _emit(self, state: str, source: Literal["agent", "user"]) -> None:
+    def _emit(self, state: str, source: Literal["agent", "user"], *, interrupted: bool) -> None:
         if state == self._last_state:
             return
         self._last_state = state
-        self._callback(ConversationStateChanged(state=state, source=source))
+        self._callback(ConversationStateChanged(state=state, source=source, interrupted=interrupted))
 
 
 def install_session_state_hook(session: object, callback: StateCallback) -> SessionStateHook:

@@ -78,6 +78,20 @@ def test_operator_file_digest_detects_changes(tmp_path):
         config.require_unchanged()
 
 
+def test_reachy_only_ensemble_requires_explicit_schema(tmp_path):
+    path = operator_file(tmp_path)
+    data = json.loads(path.read_text())
+    data.update(schema_version=2)
+    del data["stackchan"]
+    del data["soarm101"]
+    path.write_text(json.dumps(data))
+    assert PuppeteerEnsembleConfig(path).performer_ids == ("reachy",)
+    data["soarm101"] = {}
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        PuppeteerEnsembleConfig(path)
+
+
 def test_native_ensemble_is_exclusive_of_legacy_reachy_and_fake_puppeteer(tmp_path):
     path = operator_file(tmp_path)
     legacy = tmp_path / "embodiment.json"
@@ -197,6 +211,7 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tm
         assert status["state"] == "disconnected"
         room.observe("listening")
         room.observe("speaking")
+        room.observe("listening", interrupted=True)
         await asyncio.sleep(0.03)
         outcome = await room.express("yes")
         assert outcome == {"outcome": "accepted", "expression": "yes"}
@@ -206,11 +221,12 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tm
         await room.close()
     logged = [json.loads(line) for line in events.read_text().splitlines()]
     assert [e["kind"] for e in logged] == [
-        "presence", "presence", "expression", "presence",
+        "presence", "presence", "presence", "expression", "presence",
     ]
     presence = [e["value"] for e in logged if e["kind"] == "presence"]
-    assert [x["state"] for x in presence] == ["listening", "speaking", "disconnected"]
-    assert [x["sequence"] for x in presence] == [0, 1, 2]
+    assert [x["state"] for x in presence] == ["listening", "speaking", "listening", "disconnected"]
+    assert [x["sequence"] for x in presence] == [0, 1, 2, 3]
+    assert [x["interrupted"] for x in presence] == [False, False, True, False]
     assert all(x["source"] == "agent_state" for x in presence)
     assert all(not e["llm_env"] for e in logged)
 

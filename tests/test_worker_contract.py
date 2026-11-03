@@ -12,6 +12,7 @@ from forge_conversationalist.agent import (
     _profile_for_job,
     _register_voice_rpc,
     _requested_qwen_voice,
+    _requested_turn_pacing,
     _requested_vad_sensitivity,
     build_voice_session,
     entrypoint,
@@ -103,6 +104,31 @@ def test_job_vad_sensitivity_accepts_only_named_presets() -> None:
     assert _requested_vad_sensitivity('{"vad_sensitivity":[]}') == "standard"
     assert _requested_vad_sensitivity('{"vad_sensitivity":"unknown"}') == "standard"
     assert _requested_vad_sensitivity("not json") == "standard"
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ('{"turn_pacing":"quick"}', "quick"),
+    ('{"turn_pacing":"patient"}', "patient"),
+    ('{"turn_pacing":[]}', "standard"),
+    ('{"turn_pacing":"invalid"}', "standard"),
+])
+def test_turn_pacing_restricts_worker_metadata(value, expected):
+    assert _requested_turn_pacing(value) == expected
+
+
+@pytest.mark.parametrize(("pacing", "delay"), [("quick", 0.25), ("patient", 1.2)])
+def test_turn_pacing_configures_livekit_endpointing(pacing, delay):
+    constructors = SimpleNamespace(
+        STT=MagicMock(), LLM=MagicMock(), TTS=MagicMock(), TurnDetector=MagicMock(),
+    )
+    sdk = SimpleNamespace(inference=constructors, AgentSession=MagicMock(side_effect=lambda **x: x),
+                          TurnHandlingOptions=MagicMock(side_effect=lambda **x: x))
+    fake_silero = SimpleNamespace(VAD=SimpleNamespace(load=MagicMock()))
+    with patch.dict("sys.modules", {"livekit.plugins.silero": fake_silero}):
+        session = build_voice_session(CloudProfile(), sdk=sdk, turn_pacing=pacing)
+    assert session["turn_handling"]["endpointing"] == {
+        "mode": "fixed", "min_delay": delay, "max_delay": delay,
+    }
 
 
 def test_live_voice_rpc_updates_tts_for_only_authorized_participant() -> None:
