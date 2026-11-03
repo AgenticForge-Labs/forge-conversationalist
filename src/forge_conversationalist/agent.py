@@ -28,6 +28,7 @@ from .embodiment import EmbodimentSession
 from .ensemble import EnsembleSession
 from .integrations import load_integrations
 from .personality import DEFAULT, Personality, load_personality
+from .robot_rpc import register_robot_rpc
 from .speech_catalog import selected_speech_model
 from .text_hook import install_assistant_text_hook, install_session_state_hook
 from .transcript_rpc import register_transcript_rpc
@@ -307,6 +308,13 @@ async def entrypoint(ctx: object) -> None:
             base_profile=load_profile(),
             current_profile=profile,
         )
+        if ensemble is not None:
+            register_robot_rpc(
+                ctx.room.local_participant,
+                ensemble=ensemble,
+                authorized_identity=authorized_identity,
+                room=ctx.room,
+            )
     # A fixed greeting needs TTS only. Asking the LLM to generate it with only
     # system instructions fails on providers that require a user query and
     # creates an unnecessary model request.
