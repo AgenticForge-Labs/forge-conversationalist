@@ -342,3 +342,90 @@ def test_audio_ingress_is_inert_without_capability_and_explicit_opt_in(tmp_path)
     )
     enabled._task = RunningTask()
     assert enabled.offer_speech_envelope([{"stream_id": "one"}]) is False
+
+
+
+def duo_operator_file(tmp_path: Path) -> Path:
+    path = operator_file(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 3
+    payload.pop("soarm101")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_duo_uses_exact_two_robot_catalog_without_dummy_soarm(tmp_path):
+    path = duo_operator_file(tmp_path)
+    selected = PuppeteerEnsembleConfig(path)
+    assert selected.performer_ids == ("reachy", "stackchan")
+    configured = load_integrations({"PUPPETEER_ENSEMBLE_CONFIG": str(path)})
+    assert configured.ensemble is not None
+    assert configured.ensemble.performer_ids == ("reachy", "stackchan")
+    for field in (None, {}, {"instance_id": "soarm101", "mode": "simulation"}):
+        data = json.loads(path.read_text())
+        data["soarm101"] = field
+        path.write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="SO-ARM101"):
+            PuppeteerEnsembleConfig(path)
+    data.pop("soarm101")
+    data["stackchan"]["instance_id"] = "reachy"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="unique performer"):
+        PuppeteerEnsembleConfig(path)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("extra_unconfigured_performer", [False, True])
+async def test_duo_real_stdio_child_requires_exact_catalog(
+    tmp_path, extra_unconfigured_performer,
+):
+    pytest.importorskip("mcp")
+    config = duo_operator_file(tmp_path)
+    script = tmp_path / "forge-puppeteer-ensemble"
+    expected = {
+        "reachy": {"expressions": ["yes"]},
+        "stackchan": {"expressions": ["yes", "no"]},
+    }
+    if extra_unconfigured_performer:
+        expected["soarm101"] = {"expressions": ["yes"]}
+    # The child only emulates the documented MCP contract. No SDK import,
+    # hardware port, connection or actual robot action is allowed.
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "from mcp.server import MCPServer\n"
+        f"PERFORMERS = {expected!r}\n"
+        "app = MCPServer('offline-duo-room')\n"
+        "@app.tool()\n"
+        "async def ensemble_state() -> dict:\n"
+        "    return {'schema': 'forge.behavior.v1', 'session_id': None,\n"
+        "            'state': 'disconnected', 'performers': PERFORMERS}\n"
+        "@app.tool()\n"
+        "async def ensemble_presence(session_id: str, event_id: str,\n"
+        "    sequence: int, state: str, source: str = 'agent_state',\n"
+        "    interrupted: bool = False) -> dict:\n"
+        "    return {'outcome': 'accepted', 'state': state}\n"
+        "@app.tool()\n"
+        "async def ensemble_expression(expression: str, action_id: str,\n"
+        "    performer_ids: list[str] | None = None) -> dict:\n"
+        "    return {'outcome': 'accepted', 'expression': expression}\n"
+        "app.run(transport='stdio')\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    room = EnsembleSession(
+        PuppeteerEnsembleConfig(config, command=str(script)),
+        room_id="reviewed-livekit-room", caller_id="verified-caller",
+    )
+    try:
+        if extra_unconfigured_performer:
+            with pytest.raises(RuntimeError, match="unexpected room or performer"):
+                await room.start()
+        else:
+            state = await room.start()
+            assert set(state["performers"]) == {"reachy", "stackchan"}
+            assert (await room.express("yes", "reachy"))["outcome"] == "accepted"
+            assert (await room.express("yes", "soarm101"))["outcome"] == "unsupported"
+            room.observe("speaking")
+            assert (await room.status())["state"] == "disconnected"
+    finally:
+        await room.close()
