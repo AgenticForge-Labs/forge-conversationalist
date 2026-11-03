@@ -27,7 +27,7 @@ async def source(frames):
         yield item
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_pass_through_identity_and_no_private_content():
     frames = [frame(2), frame(6)]
     batches = []
@@ -48,7 +48,7 @@ async def test_pass_through_identity_and_no_private_content():
     assert all("data" not in x and "text" not in x for b in batches for x in b)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_refused_optional_feature_batch_never_blocks_voice():
     original = [frame(4), frame(4), frame(4)]
     emitted = []
@@ -63,7 +63,7 @@ async def test_refused_optional_feature_batch_never_blocks_voice():
     assert len(emitted) == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_format_failure_does_not_change_audio_frames():
     original = [frame(4), FakeAudioFrame(999, 1, b"bad"), frame(4)]
     captured = []
@@ -77,7 +77,7 @@ async def test_format_failure_does_not_change_audio_frames():
     assert len(captured) == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_optional_sink_exception_does_not_interrupt_voice():
     def broken(_):
         raise RuntimeError("unavailable")
@@ -101,7 +101,7 @@ class FakeAgent:
         self.frames = frames
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_default_livekit_tts_node_is_not_replaced():
     captured = []
     WrappedAgent = agent_class_with_speech_envelope(
@@ -119,3 +119,9 @@ async def test_default_livekit_tts_node_is_not_replaced():
 def test_sink_must_be_callable():
     with pytest.raises(TypeError):
         agent_class_with_speech_envelope(FakeAgent, None)
+
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
