@@ -372,3 +372,21 @@ integration require separate attended local acceptance.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 [docs/PR_PLAN.md](docs/PR_PLAN.md), and [AGENTS.md](AGENTS.md).
+
+
+### Provider-neutral speech envelope (software foundation)
+
+The hardware-free analyzer in src/forge_conversationalist/speech_envelope.py
+consumes **outgoing synthesized 16-bit PCM**, not microphone/STT data, and emits
+only versioned forge.speech_envelope.v1 hop features: generated-audio offset,
+50 ms duration, activity, smoothed intensity and RMS level. The design follows
+the RMS/VAD/attack-release approach in the pinned Pollen Reachy Mini
+speech_tapper.py, but not its robot-specific oscillators or GLib scheduler.
+It does not record audio, text, or prompts.
+
+**Status:** This is an analyzed-PCM primitive and offline tests, not a LiveKit
+output tap, active Puppeteer transport, or physical feature. The dedicated
+LiveKit TTS/output hook and authenticated, bounded Puppeteer ingress must be
+wired, tested and released separately. A generated_pcm offset is not a LiveKit
+output-track timestamp, local speaker acoustic time, or SDK motion completion.
+Default behavior is unchanged and no new robot motion is authorized.
