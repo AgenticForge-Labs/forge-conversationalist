@@ -145,9 +145,10 @@ def test_ensemble_agent_tools_only_status_and_exact_explicit_gestures(tmp_path):
 
     async def run():
         assert json.loads(await registered["get_ensemble_status"]())["state"] == "speaking"
-        assert json.loads(await registered["request_ensemble_gesture"]("yes")) == {
-            "outcome": "accepted", "expression": "yes",
-        }
+        result = json.loads(await registered["request_ensemble_gesture"]("yes"))
+        assert result["outcome"] == "accepted" and result["expression"] == "yes"
+        assert result["completion"] == "unconfirmed"
+        assert "not confirmed complete" in result["spoken_guidance"]
 
     asyncio.run(run())
     assert stub.expressions == ["yes"]

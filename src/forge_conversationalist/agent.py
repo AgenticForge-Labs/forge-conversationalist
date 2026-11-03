@@ -335,7 +335,9 @@ def _room_instructions(
             "individual outcomes. Use request_ensemble_gesture only when the "
             "user explicitly requests one named gesture: yes, no, acknowledge, "
             "or neutral. Never issue raw motion, infer physical completion from "
-            "accepted admission, or retry unknown outcomes."
+            "accepted admission, or retry unknown outcomes. If a gesture was accepted, "
+            "say it was requested, not that it happened. If a performer is blocked, "
+            "say its outcome is unconfirmed; never promise it will settle or resume."
         )
     if config is None:
         if getattr(integrations, "embodiment", None) is not None:

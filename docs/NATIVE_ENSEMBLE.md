@@ -123,6 +123,9 @@ and is never automatically retried on an ambiguous outcome. Accepted
 MCP admission is not movement completion. Shutdown attempts
 `disconnected`; a missing acknowledgement is logged, not interpreted
 as STOP/HOLD.
+An accepted gesture response explicitly reports completion as unconfirmed;
+the assistant must not claim that it happened or that a blocked robot will
+settle or resume by itself.
 
 ## Tests and attended acceptance
 
