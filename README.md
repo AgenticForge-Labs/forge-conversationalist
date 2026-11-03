@@ -390,3 +390,29 @@ LiveKit TTS/output hook and authenticated, bounded Puppeteer ingress must be
 wired, tested and released separately. A generated_pcm offset is not a LiveKit
 output-track timestamp, local speaker acoustic time, or SDK motion completion.
 Default behavior is unchanged and no new robot motion is authorized.
+
+
+### Opt-in outgoing speech envelope preview
+
+With a previously authorized Puppeteer ensemble and its matching optional
+MCP tool, set CONVERSATIONALIST_OUTGOING_SPEECH_ENVELOPE=1 in the trusted worker
+environment. Conversationalist observes **only outgoing synthesized TTS PCM**
+through LiveKit's standard Agent.default.tts_node, passes the exact same
+AudioFrame objects onward, and batches content-free 50 ms loudness/voice
+activity hops to the **existing** room-owned Puppeteer MCP child. A missing
+tool, unsupported audio format, queue pressure, or MCP failure never starts a
+new motor owner and does not stop the normal audio response.
+
+The feature contract is forge.speech_envelope.v1. Its timing_source is
+generated_pcm and acoustic_playout_measured is always false. The Puppeteer
+receiver only offers a read-only preview and device-neutral shaping; no
+physical motion is enabled by this setting. This feature does not see raw
+microphone audio or forward any PCM, text, transcription, model credentials
+or speaker device details to Puppeteer.
+
+Actual EMEET speaker playback delay and interruption timing are unmeasured.
+The existing opt-in playback presence path can operate alongside this
+feature; it does not make generated PCM offsets acoustically synchronized.
+Real audio-reactive robot rendering remains a separate physically qualified
+and operator-granted task. The stock Pollen Conversation App must stay stopped
+while Puppeteer owns Reachy.
