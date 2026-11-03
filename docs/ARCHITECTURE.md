@@ -16,10 +16,15 @@ remains outstanding; nothing here asserts deployed production readiness.
 ## Device-independent presentation (PR #3)
 Audio input/output is attached to a **LiveKit participant**, not a robot.
 The browser offers microphone and speaker selectors (device availability
-and speaker routing depend on browser/OS support). A future Reachy or
-other physical audio client should join the same LiveKit room through
-its owning SDK media bridge without making it the agent's microphone
-or speaker by default.
+and speaker routing depend on browser/OS support). A local audio CLI can also
+join the same LiveKit room as a participant. It uses the host's system
+microphone and speakers by default, and allows an explicit output-device
+override when the host exposes one. This supports browserless local voice use
+while keeping the agent's room, VAD, STT, TTS and turn handling in LiveKit. It
+does not start a second robot motion controller.
+The local speaker's sounddevice playout is not acoustic feedback. Existing
+worker `playback_presence` timestamps continue to describe the agent's outgoing
+LiveKit track, not when the host speaker becomes audible.
 
 Small semantic presentation signals are independent of the microphone
 and speaker:

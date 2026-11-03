@@ -56,6 +56,46 @@ Set `CONVERSATIONALIST_TURN_DETECTOR_VERSION=v1-mini` in the worker env to run
 the turn detector locally. This loads a roughly 244 MB model and uses VAD-based
 interruption handling; the default cloud setup keeps LiveKit's automatic turn
 detector and adaptive interruption selection.
+
+### Browserless system audio
+
+The browser is optional for local voice conversations. Run the LiveKit worker
+in one terminal, then start the local audio participant in another. The local
+participant uses the host operating system's default microphone and speakers;
+it joins the same LiveKit room as the agent, publishes microphone audio, and
+plays only the agent's audio track. The worker and local participant must run
+on the machine whose system audio devices should be used.
+
+```bash
+# Terminal 1: worker, with the root .env.local loaded as usual
+.venv/bin/python -m forge_conversationalist.agent dev
+
+# Terminal 2: enumerate devices, then start a voice session
+.venv/bin/forge-conversationalist-audio --list-devices
+.venv/bin/forge-conversationalist-audio
+```
+
+To override a device, pass an enumerated numeric index or a unique name
+substring. For example, if the operating system lists Reachy's USB speaker:
+
+```bash
+.venv/bin/forge-conversationalist-audio --output-device "Pollen Robotics Reachy Mini Audio"
+```
+
+An unavailable or ambiguous override fails before connecting. Leaving the
+options unset always selects the system defaults. This route keeps the same
+LiveKit worker, provider models, room, VAD and turn handling; it does not start
+a second robot motion process. Hold `Ctrl+C` to end the local session and
+delete its ephemeral room. The local LiveKit audio device helper enables AEC,
+noise suppression, high-pass filtering and AGC for its microphone stream.
+The agent's speaking presence still follows its outgoing LiveKit track events;
+those events do not measure the exact moment sound reaches the selected
+speaker.
+
+The CLI uses `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` from
+the trusted root worker environment. Keep these credentials out of
+`web/.env.local`. `CONVERSATIONALIST_ACCESS_TOKEN` remains the browser UI's
+local access gate; the browserless CLI does not require or send it.
 The **Microphone sensitivity** setting adjusts Silero's speech activation
 threshold. Less sensitive may reject background sounds but can also miss quiet
 speech; Standard keeps the SDK default. Changes apply to the next conversation.
