@@ -68,3 +68,22 @@ PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 i
   unknown outcomes. Availability and quarantine remain Puppeteer/SDK-owned.
 - Do not silently import every upstream recording: an immutable reviewed
   behavior pack is the sole selection boundary.
+
+
+## Experimental LiveKit output-presence seam (2026-11)
+
+- `CONVERSATIONALIST_PLAYBACK_PRESENCE=1` is opt-in for a previously
+  authorized native ensemble. Default LiveKit room output events describe
+  audio sent to a track, NOT actual remote speaker/acoustic playout.
+- Bind `session.output.audio` after `session.start`; never create a new
+  audio sink, duplicate microphone/speaker service, or start a second
+  Puppeteer runtime just to observe playback events.
+- Semantic agent speaking is not itself evidence that audio has begun;
+  `playback_started` gates the opt-in speaking motion state.
+- User interruption remains urgent, pending output callbacks cannot silently
+  rearm movement, and timeout/unconfirmed STOP semantics remain unchanged.
+- Preserve source attribution: `agent_state` vs. `playback`; neither
+  promises PCM/phoneme accuracy or physical motion completion.
+- A missing/incompatible output hook falls back to existing semantic
+  presence. Keep tests with fake output emitters and fake robots; physical
+  acceptance and precise playback calibration are independent gates.
