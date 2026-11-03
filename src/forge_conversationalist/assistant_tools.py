@@ -124,7 +124,7 @@ def build_assistant_tools(
         tools.extend([
             function_tool_factory(
                 get_ensemble_status, name="get_ensemble_status",
-                description="Read three-performer Puppeteer status and individual device evidence.",
+                description="Read Puppeteer room status and individual configured performer evidence.",
             ),
             function_tool_factory(
                 request_ensemble_gesture, name="request_ensemble_gesture",
