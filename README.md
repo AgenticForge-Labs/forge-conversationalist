@@ -252,6 +252,23 @@ robot-free startup. Follow [Embodiment reference integration](docs/EMBODIMENT.md
 for clean package install, all three fake profiles, MCP calls, action lookup,
 software tests and physical qualification gaps.
 
+## Optional native robot ensembles
+
+The same LiveKit voice session can now embody **Reachy Mini and StackChan
+together** without a simulated SO-ARM101. Puppeteer's merged
+`schema_version: 3` deployment launches exactly those two native SDK
+sessions under one `ConversationEnsemble`; Conversationalist validates
+the exact two-performer catalog and starts only the existing room-owned
+MCP child.
+
+Use Puppeteer's review-only
+`scripts/author_three_robot_ensemble.py --reachy-stackchan-only` generator,
+approve real hardware identity, grants, Reachy neutral and StackChan USB
+port, and set `PUPPETEER_ENSEMBLE_CONFIG` in the trusted worker. No
+additional microphone, robot driver, artificial SO-ARM, or voice persona
+is created. See [Native ensemble deployment](docs/NATIVE_ENSEMBLE.md).
+This does not validate real hardware motion or install firmware.
+
 ## Optional native three-robot ensemble (PR #9)
 
 A single authorized LiveKit voice room can drive **the same
