@@ -55,6 +55,23 @@ PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 i
   notification examples must be clearly labeled manual previews.
 
 
+## Optional two-robot Reachy + StackChan deployment
+
+- Puppeteer config `schema_version: 3` explicitly selects exactly Reachy
+  and StackChan. Preserve older v1 three-performer and v2 Reachy-only
+  configurations. The worker must reject a v3 SO-ARM record and a child
+  that announces an unexpected/missing performer.
+- Reuse one `EnsembleSession` and its current stdio MCP child for all
+  speaking, listening, gestures and optional envelope preview. Never
+  launch two SDK owners against Reachy or StackChan.
+- Do not accept hardware authority from the presence of a config file:
+  signed room identity, operator grants, live SDK/firmware capabilities,
+  Reachy's physical neutral and uncertain STOP quarantine still govern.
+- A StackChan EXT CONTROL icon disappearing can be caused by AI Agent
+  mode or firmware OTA; diagnose with the SDK's read-only
+  `docs/disappearing-app-recovery.md` guide. Conversationalist must not
+  automatically flash, erase, reconnect, retry or rearm robots.
+
 ## Native robot expression controls (2026-11-02)
 - Only Puppeteer owns the authoritative, approved finite expression catalog;
   fetch `ensemble_state.performers[*].expressions` from the same room-owned
