@@ -166,7 +166,9 @@ def test_ensemble_agent_tools_only_status_and_exact_explicit_gestures(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tmp_path, monkeypatch):
+async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(
+    tmp_path, monkeypatch, caplog,
+):
     pytest.importorskip("mcp")
     events = tmp_path / "events.jsonl"
     path = operator_file(tmp_path)
@@ -223,16 +225,17 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tm
     try:
         status = await room.start()
         assert status["state"] == "disconnected"
-        room.observe("listening")
-        room.observe("speaking", source="playback")
-        room.observe("listening", source="playback", interrupted=True)
-        await asyncio.sleep(0.03)
-        outcome = await room.express("yes", "reachy")
-        assert outcome == {"outcome": "accepted", "expression": "yes"}
-        assert (await room.express("raw_motor_goal", "reachy"))["outcome"] == "unsupported"
-        assert (await room.express("happy", "stackchan"))["outcome"] == "unsupported"
-        assert (await room.express("yes", "invented-robot"))["outcome"] == "unsupported"
-        assert (await room.status())["state"] == "disconnected"
+        with caplog.at_level("INFO", logger="forge_conversationalist.ensemble"):
+            room.observe("listening")
+            room.observe("speaking", source="playback")
+            room.observe("listening", source="playback", interrupted=True)
+            await asyncio.sleep(0.03)
+            outcome = await room.express("yes", "reachy")
+            assert outcome == {"outcome": "accepted", "expression": "yes"}
+            assert (await room.express("raw_motor_goal", "reachy"))["outcome"] == "unsupported"
+            assert (await room.express("happy", "stackchan"))["outcome"] == "unsupported"
+            assert (await room.express("yes", "invented-robot"))["outcome"] == "unsupported"
+            assert (await room.status())["state"] == "disconnected"
     finally:
         await room.close()
     logged = [json.loads(line) for line in events.read_text().splitlines()]
@@ -248,6 +251,16 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(tm
         "agent_state", "playback", "playback", "agent_state",
     ]
     assert all(not e["llm_env"] for e in logged)
+    enqueued = [r for r in caplog.records if r.msg == "puppeteer_presence_enqueued"]
+    calls = [r for r in caplog.records if r.msg == "puppeteer_presence_call_started"]
+    acks = [r for r in caplog.records if r.msg == "puppeteer_presence_call_completed"]
+    assert [r.sequence for r in enqueued] == [0, 1, 2]
+    assert [r.sequence for r in calls] == [0, 1, 2]
+    assert [r.sequence for r in acks] == [0, 1, 2]
+    assert all(r.session_id == "livekit-one-room" for r in enqueued + calls + acks)
+    assert all(r.mcp_outcome == "accepted" for r in acks)
+    assert all(r.call_started_at_monotonic_ns > 0 for r in calls)
+    assert all(r.acknowledged_at_monotonic_ns > 0 for r in acks)
 
 
 @pytest.fixture

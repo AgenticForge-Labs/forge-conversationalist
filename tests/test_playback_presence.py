@@ -53,6 +53,7 @@ def test_playback_events_gate_speaking_and_ignore_early_idle():
     assert events == [("listening", "agent_state", False)]
 
     audio.emit("playback_started", created_at=123.0)
+    audio.emit("playback_progressed", started_at=123.1, offset=0.0, duration=0.25)
     observer.observe(signal("idle"))  # do not shut speaking off before output drains
     audio.emit("playback_finished", playback_position=2.0, interrupted=False)
     assert events == [
@@ -66,6 +67,7 @@ def test_playback_events_gate_speaking_and_ignore_early_idle():
     observer.detach()
     audio.emit("playback_started", created_at=124.0)
     assert len(events) == 3
+    assert audio.listeners == {"playback_started": [], "playback_finished": [], "playback_progressed": []}
 
 
 def test_playback_finished_restores_listening_if_semantic_speaking_is_stale():
@@ -125,3 +127,51 @@ def test_unavailable_audio_output_does_not_disable_existing_conversation():
     assert events == [("speaking", "agent_state", False)]
     with pytest.raises(TypeError):
         PlaybackPresence(None)
+
+
+def test_playback_timing_logs_keep_event_times_and_source_provenance(caplog):
+    audio = AudioOutput()
+    observer = PlaybackPresence(lambda *_: None, session_id="room-123")
+    assert observer.attach(audio)
+
+    with caplog.at_level("INFO", logger="forge_conversationalist.playback_presence"):
+        observer.observe(signal("speaking"))
+        audio.emit("playback_started", created_at=123.0)
+        audio.emit("playback_progressed", started_at=123.1, offset=0.25, duration=0.5)
+        audio.emit("playback_finished", playback_position=0.75, interrupted=False)
+
+    records = {record.msg: record for record in caplog.records}
+    semantic = records["conversation_semantic_state_observed"]
+    started = records["livekit_output_playback_started"]
+    progressed = records["livekit_output_playback_progressed"]
+    finished = records["livekit_output_playback_finished"]
+    assert semantic.semantic_state == "speaking"
+    assert semantic.semantic_source == "agent"
+    assert semantic.timing_source == "livekit_agent_state"
+    assert started.session_id == "room-123"
+    assert started.output_created_at_unix_s == 123.0
+    assert started.playback_sequence == 1
+    assert started.acoustic_playout_measured is False
+    assert progressed.output_started_at_unix_s == 123.1
+    assert progressed.audio_offset_s == 0.25
+    assert progressed.audio_duration_s == 0.5
+    assert finished.playback_position_s == 0.75
+    assert finished.interrupted is False
+    assert all(record.received_at_monotonic_ns > 0 for record in (semantic, started, progressed, finished))
+
+
+def test_playback_progress_listener_is_optional(caplog):
+    class OlderAudioOutput(AudioOutput):
+        def on(self, name, callback):
+            if name == "playback_progressed":
+                raise NotImplementedError
+            super().on(name, callback)
+
+    audio = OlderAudioOutput()
+    observer = PlaybackPresence(lambda *_: None)
+    with caplog.at_level("WARNING", logger="forge_conversationalist.playback_presence"):
+        assert observer.attach(audio)
+    assert "LiveKit playback progress events unavailable" in caplog.messages
+    observer.observe(signal("speaking"))
+    audio.emit("playback_started", created_at=1.0)
+    assert observer.attached

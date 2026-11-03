@@ -228,6 +228,21 @@ After `AgentSession.start`, the worker subscribes to the existing
 - If an output sink is missing/incompatible, the worker warns and preserves
   the previous semantic-only mode. No automatic rearm or retry occurs.
 
+When this opt-in hook is attached, the worker also writes content-free
+structured timing records for semantic state receipt and LiveKit output
+`playback_started`, `playback_progressed`, and `playback_finished` callbacks.
+Records include the room ID, source event time when supplied, audio offset and
+duration when supplied, worker receipt wall-clock and monotonic timestamps, and
+the presence sequence/event ID with MCP call and response times. They contain
+no PCM or transcript. Correlate the room ID and sequence with Puppeteer's
+action IDs and action journal to measure state-to-submission and
+submission-to-SDK-completion intervals. An MCP `accepted` response is
+admission evidence only. The output timestamps describe LiveKit's server-side
+output path; they do not establish browser or speaker acoustics, and must not
+be reported as measured physical motion timing.
+Preserve the worker logs alongside the Puppeteer action journal for attended
+timing acceptance.
+
 Important precision: the **default LiveKit RoomIO output** fires playback
 events when audio is pushed toward the LiveKit track. This is *not a
 measurement of the listener's network playout, browser speaker output,

@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,18 @@ logger = logging.getLogger(__name__)
 SCHEMA = "forge.behavior.v1"
 TOOLS = frozenset({"ensemble_state", "ensemble_presence", "ensemble_expression"})
 STATES = frozenset({"idle", "listening", "speaking"})
+
+
+def _presence_timing_fields(args: dict) -> dict[str, object]:
+    """Content-free identity fields shared by queue and MCP timing records."""
+    return {
+        "session_id": args.get("session_id"),
+        "event_id": args.get("event_id"),
+        "sequence": args.get("sequence"),
+        "state": args.get("state"),
+        "source": args.get("source"),
+        "interrupted": args.get("interrupted"),
+    }
 
 
 @dataclass(frozen=True)
@@ -151,9 +164,16 @@ class EnsembleSession:
             return
         self._last_state = state
         self._last_source = source
-        self._enqueue(
-            "ensemble_presence",
-            self._presence(state, source=source, interrupted=interrupted),
+        args = self._presence(state, source=source, interrupted=interrupted)
+        self._enqueue("ensemble_presence", args)
+        logger.info(
+            "puppeteer_presence_enqueued",
+            extra={
+                **_presence_timing_fields(args),
+                "timing_source": "conversationalist_mcp_queue",
+                "enqueued_at_unix_ns": time.time_ns(),
+                "enqueued_at_monotonic_ns": time.monotonic_ns(),
+            },
         )
 
     async def start(self) -> dict:
@@ -231,8 +251,27 @@ class EnsembleSession:
                         if future is not None and not future.done():
                             future.set_result({})
                         break
+                    is_presence = tool == "ensemble_presence"
+                    if is_presence:
+                        call_fields = {
+                            **_presence_timing_fields(args),
+                            "timing_source": "conversationalist_mcp_call",
+                            "call_started_at_unix_ns": time.time_ns(),
+                            "call_started_at_monotonic_ns": time.monotonic_ns(),
+                        }
+                        logger.info("puppeteer_presence_call_started", extra=call_fields)
                     try:
                         value = await self._call(session, tool, args)
+                        if is_presence:
+                            logger.info(
+                                "puppeteer_presence_call_completed",
+                                extra={
+                                    **call_fields,
+                                    "mcp_outcome": value.get("outcome"),
+                                    "acknowledged_at_unix_ns": time.time_ns(),
+                                    "acknowledged_at_monotonic_ns": time.monotonic_ns(),
+                                },
+                            )
                         if future is not None and not future.done():
                             future.set_result(value)
                         elif tool == "ensemble_presence" and value.get("outcome") not in {
@@ -240,6 +279,16 @@ class EnsembleSession:
                         }:
                             logger.warning("Puppeteer ensemble presence denied: %s", value.get("reason"))
                     except Exception as exc:  # noqa: BLE001 - MCP transport exceptions are arbitrary
+                        if is_presence:
+                            logger.warning(
+                                "puppeteer_presence_call_unconfirmed",
+                                extra={
+                                    **call_fields,
+                                    "error_type": type(exc).__name__,
+                                    "observed_at_unix_ns": time.time_ns(),
+                                    "observed_at_monotonic_ns": time.monotonic_ns(),
+                                },
+                            )
                         if future is not None and not future.done():
                             future.set_exception(RuntimeError("Puppeteer outcome unconfirmed"))
                         else:

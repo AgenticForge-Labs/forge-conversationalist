@@ -25,6 +25,12 @@ does not start a second robot motion controller.
 The local speaker's sounddevice playout is not acoustic feedback. Existing
 worker `playback_presence` timestamps continue to describe the agent's outgoing
 LiveKit track, not when the host speaker becomes audible.
+When the opt-in native ensemble hook is attached, structured worker logs
+preserve semantic state receipt and LiveKit output start/progress/finish
+timestamps with wall-clock and monotonic receipt times. These records can be
+correlated with Puppeteer action IDs and journal timestamps, but they remain
+server output evidence rather than browser acoustics or observed physical
+motion.
 
 Small semantic presentation signals are independent of the microphone
 and speaker:
