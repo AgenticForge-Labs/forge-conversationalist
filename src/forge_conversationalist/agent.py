@@ -264,17 +264,6 @@ async def entrypoint(ctx: object) -> None:
             ensemble.observe(signal.state, interrupted=signal.interrupted)
 
     install_session_state_hook(session, handle_state)
-    agent = Agent(
-        instructions=_room_instructions(
-            agent_integrations, caller_id=authorized_identity, session_id=room_name,
-            personality=personality,
-        ),
-        tools=build_assistant_tools(
-            agent_integrations,
-            embodiment_session=embodiment if authorized_identity else None,
-            ensemble_session=ensemble if authorized_identity else None,
-        ),
-    )
     room_options = room_io.RoomOptions(
         close_on_disconnect=False,
         **({"participant_identity": authorized_identity} if authorized_identity else {}),
@@ -286,7 +275,23 @@ async def entrypoint(ctx: object) -> None:
         # A connected authorized LiveKit room must exist before this optional
         # host-owned child opens any native SDK sessions. No microphone/TTS
         # stream is moved to a robot by this step.
-        await ensemble.start()
+        try:
+            await ensemble.start()
+        except Exception:
+            logger.exception("Puppeteer ensemble unavailable; continuing without robot tools")
+            agent_integrations = replace(agent_integrations, ensemble=None)
+            ensemble = None
+    agent = Agent(
+        instructions=_room_instructions(
+            agent_integrations, caller_id=authorized_identity, session_id=room_name,
+            personality=personality,
+        ),
+        tools=build_assistant_tools(
+            agent_integrations,
+            embodiment_session=embodiment if authorized_identity else None,
+            ensemble_session=ensemble if authorized_identity else None,
+        ),
+    )
     await session.start(room=ctx.room, agent=agent, room_options=room_options)
     if authorized_identity:
         register_transcript_rpc(

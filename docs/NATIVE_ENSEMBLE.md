@@ -99,6 +99,11 @@ Puppeteer SDK child. At startup, the child must advertise the exact
 three named MCP tools, the `forge.behavior.v1` schema, an unoccupied
 room and matching performer identities.
 
+If this optional child cannot start or fails discovery, the worker logs the
+failure and starts voice without ensemble instructions or robot tools. It
+does not retry or rearm the performer; the operator must reconcile any
+unknown physical action before a later attempt.
+
 The state hook sends one monotonically sequenced, content-free
 `ensemble_presence` event for each LiveKit state change and refreshes
 the latest state approximately every 10 seconds. The source is

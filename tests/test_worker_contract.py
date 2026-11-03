@@ -64,6 +64,33 @@ def test_entrypoint_uses_tts_only_greeting_without_an_llm_request() -> None:
     session.generate_reply.assert_not_called()
 
 
+def test_ensemble_startup_failure_keeps_voice_and_removes_robot_tools() -> None:
+    session = SimpleNamespace(start=AsyncMock(), say=AsyncMock(), on=Mock(), history=[])
+    robot = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError("unavailable")),
+                            close=AsyncMock())
+    tool_builder = Mock(return_value=[])
+    room = SimpleNamespace(name="room", local_participant=Mock())
+    ctx = SimpleNamespace(
+        room=room, job=SimpleNamespace(metadata='{"authorized_identity":"person"}'),
+        connect=AsyncMock(), add_shutdown_callback=Mock(),
+    )
+    with (
+        patch("forge_conversationalist.agent.load_profile", return_value=CloudProfile()),
+        patch("forge_conversationalist.agent.load_integrations", return_value=Integrations(ensemble=object())),
+        patch("forge_conversationalist.agent.build_voice_session", return_value=session),
+        patch("forge_conversationalist.agent.EnsembleSession", return_value=robot),
+        patch("forge_conversationalist.agent.build_assistant_tools", tool_builder),
+        patch("forge_conversationalist.agent.register_transcript_rpc"),
+        patch("forge_conversationalist.agent._register_voice_rpc"),
+    ):
+        asyncio.run(entrypoint(ctx))
+    robot.start.assert_awaited_once()
+    session.start.assert_awaited_once()
+    assert tool_builder.call_args.args[0].ensemble is None
+    assert tool_builder.call_args.kwargs["ensemble_session"] is None
+    session.say.assert_awaited_once()
+
+
 def test_legacy_qwen_voice_metadata_stays_pinned_to_its_model() -> None:
     assert _requested_qwen_voice('{"tts_voice":"longanhuan_v3.6"}') == "longanhuan_v3.6"
     assert _requested_qwen_voice('{"tts_voice":"untrusted-value"}') is None
