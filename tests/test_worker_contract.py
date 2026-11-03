@@ -64,6 +64,55 @@ def test_entrypoint_uses_tts_only_greeting_without_an_llm_request() -> None:
     session.generate_reply.assert_not_called()
 
 
+
+def test_playback_presence_opt_in_attaches_to_livekit_output_after_start() -> None:
+    listeners = {}
+
+    class Output:
+        def on(self, name, callback):
+            listeners.setdefault(name, []).append(callback)
+
+        def off(self, name, callback):
+            listeners[name].remove(callback)
+
+    output = Output()
+    session = SimpleNamespace(
+        start=AsyncMock(), say=AsyncMock(), on=Mock(), history=[],
+        output=SimpleNamespace(audio=output),
+    )
+    robot = SimpleNamespace(
+        start=AsyncMock(return_value={"state": "disconnected"}), close=AsyncMock(),
+        observe=Mock(),
+    )
+    room = SimpleNamespace(name="room", local_participant=Mock())
+    ctx = SimpleNamespace(
+        room=room, job=SimpleNamespace(metadata='{"authorized_identity":"person"}'),
+        connect=AsyncMock(), add_shutdown_callback=Mock(),
+    )
+    with (
+        patch("forge_conversationalist.agent.load_profile", return_value=CloudProfile()),
+        patch("forge_conversationalist.agent.load_integrations",
+              return_value=Integrations(ensemble=object())),
+        patch("forge_conversationalist.agent.build_voice_session", return_value=session),
+        patch("forge_conversationalist.agent.EnsembleSession", return_value=robot),
+        patch("forge_conversationalist.agent.build_assistant_tools", return_value=[]),
+        patch("forge_conversationalist.agent.register_transcript_rpc"),
+        patch("forge_conversationalist.agent._register_voice_rpc"),
+        patch("forge_conversationalist.agent.register_robot_rpc"),
+        patch.dict("os.environ", {"CONVERSATIONALIST_PLAYBACK_PRESENCE": "1"}),
+    ):
+        asyncio.run(entrypoint(ctx))
+    session.start.assert_awaited_once()
+    session.say.assert_awaited_once()
+    assert set(listeners) == {"playback_started", "playback_finished"}
+    listeners["playback_started"][0](SimpleNamespace(created_at=123.0))
+    robot.observe.assert_called_with("speaking", source="playback", interrupted=False)
+    listeners["playback_finished"][0](
+        SimpleNamespace(playback_position=0.6, interrupted=False)
+    )
+    robot.observe.assert_called_with("idle", source="playback", interrupted=False)
+
+
 def test_ensemble_startup_failure_keeps_voice_and_removes_robot_tools() -> None:
     session = SimpleNamespace(start=AsyncMock(), say=AsyncMock(), on=Mock(), history=[])
     robot = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError("unavailable")),

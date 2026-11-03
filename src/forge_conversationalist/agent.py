@@ -28,6 +28,7 @@ from .embodiment import EmbodimentSession
 from .ensemble import EnsembleSession
 from .integrations import load_integrations
 from .personality import DEFAULT, Personality, load_personality
+from .playback_presence import PlaybackPresence
 from .robot_rpc import register_robot_rpc
 from .speech_catalog import selected_speech_model
 from .text_hook import install_assistant_text_hook, install_session_state_hook
@@ -255,6 +256,20 @@ async def entrypoint(ctx: object) -> None:
         )
         ctx.add_shutdown_callback(ensemble.close)
 
+    # The default remains the preexisting coarse semantic presence path.
+    # Output events are opt-in until real LiveKit room audio and hardware
+    # integration are qualified. Only the already-authorized ensemble gets
+    # the output-derived presence; no PCM/transcripts leave LiveKit.
+    playback_presence = (
+        PlaybackPresence(
+            lambda state, source, interrupted: ensemble.observe(
+                state, source=source, interrupted=interrupted,
+            ) if ensemble is not None else None
+        )
+        if ensemble is not None and os.getenv("CONVERSATIONALIST_PLAYBACK_PRESENCE") == "1"
+        else None
+    )
+
     def handle_state(signal):
         logger.debug(
             "conversation state changed", extra={"state": signal.state, "source": signal.source}
@@ -262,7 +277,10 @@ async def entrypoint(ctx: object) -> None:
         if embodiment is not None:
             embodiment.observe(signal.state)
         if ensemble is not None:
-            ensemble.observe(signal.state, interrupted=signal.interrupted)
+            if playback_presence is not None:
+                playback_presence.observe(signal)
+            else:
+                ensemble.observe(signal.state, interrupted=signal.interrupted)
 
     install_session_state_hook(session, handle_state)
     room_options = room_io.RoomOptions(
@@ -294,6 +312,19 @@ async def entrypoint(ctx: object) -> None:
         ),
     )
     await session.start(room=ctx.room, agent=agent, room_options=room_options)
+    if playback_presence is not None and ensemble is not None:
+        output = getattr(getattr(session, "output", None), "audio", None)
+        try:
+            attached = playback_presence.attach(output)
+        except Exception:
+            attached = False
+            logger.exception("LiveKit output playback hook unavailable; using semantic presence")
+        if attached:
+            async def detach_playback() -> None:
+                playback_presence.detach()
+            ctx.add_shutdown_callback(detach_playback)
+        else:
+            logger.warning("No LiveKit output playback events available; using semantic presence")
     if authorized_identity:
         register_transcript_rpc(
             ctx.room.local_participant,

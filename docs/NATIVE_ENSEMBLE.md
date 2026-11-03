@@ -198,3 +198,47 @@ For real confirmation, inspect subsequent action evidence and hardware
 observations. A timeout does not authorize a retry. Real LiveKit RPC,
 exact user permission, web layout and robot hardware require local
 acceptance after CI.
+
+
+## Experimental LiveKit output-playback presence (opt-in)
+
+Conversationalist can now use LiveKit's own **output** lifecycle events
+rather than only its model/agent state to start and finish the robot's
+`speaking` presence. Enable on an already-authorized worker:
+
+```bash
+CONVERSATIONALIST_PLAYBACK_PRESENCE=1
+```
+
+No setting is required when using voice without a robot; the default is
+still legacy coarse `agent_state` presence. This is **not** a second
+audio player, robot driver, motion scheduler, browser endpoint, or alternate
+authorization path.
+
+After `AgentSession.start`, the worker subscribes to the existing
+`session.output.audio` events:
+
+- `playback_started`: sends `ensemble_presence(state="speaking",
+  source="playback")` through the one room-owned Puppeteer MCP child.
+- `playback_finished`: returns to the latest compatible semantic state,
+  using `source="playback"` and preserving the interruption flag.
+- User interruption: immediately stops reporting speaking, with
+  `source="agent_state"` and `interrupted=True`. Stale late output events
+  cannot silently restart robot motion before a fresh agent-speaking event.
+- If an output sink is missing/incompatible, the worker warns and preserves
+  the previous semantic-only mode. No automatic rearm or retry occurs.
+
+Important precision: the **default LiveKit RoomIO output** fires playback
+events when audio is pushed toward the LiveKit track. This is *not a
+measurement of the listener's network playout, browser speaker output,
+acoustic waveform, physical robot position or hardware stop*. The returned
+source indicates event provenance, not accurate synchronized PCM timing.
+Periodic heartbeats retain the provenance of their last presence state.
+
+No audio samples, transcript tokens, voice models or user speech are sent
+to Puppeteer. The native semantic behavior remains a finite pre-authored
+loop, and the physical qualification gate remains mandatory. The following
+independent work is still outstanding: capturing bounded outgoing PCM
+envelopes with validated playout timing; deriving safe speech offsets using
+the pinned Reachy `speech_tapper` or equivalent; and composing them under
+the one existing SDK motion owner without racing the recorded gestures.

@@ -265,6 +265,22 @@ moved or settled. The UI does not retry ambiguous commands. Without an
 authorized ensemble, voice works and this section reports that no robot
 controls are available. See [Native Ensemble](docs/NATIVE_ENSEMBLE.md).
 
+### Optional output-playback-driven robot presence
+
+For an **attended, authorized** native Puppeteer ensemble, the worker supports
+`CONVERSATIONALIST_PLAYBACK_PRESENCE=1`. It listens to the already-owned
+LiveKit output's `playback_started` / `playback_finished` events, and starts
+or stops the robot's `speaking` behavior using the existing Puppeteer room.
+This is a deliberate improvement over reacting only to the model's
+`agent_state_changed` state. Legacy presence remains the default.
+
+**Important:** the default LiveKit output event is not measured arrival at
+a remote browser speaker. It is a room-output publication event; amplitude,
+phoneme timing, and acoustic synchronization remain future work. No PCM or
+transcript is forwarded to the robot, and a missing output hook falls back to
+the existing semantic state behavior. See
+[Native Ensemble](docs/NATIVE_ENSEMBLE.md).
+
 ## Audio devices, expressions and notifications
 
 The web UI lets each connected participant select a supported microphone

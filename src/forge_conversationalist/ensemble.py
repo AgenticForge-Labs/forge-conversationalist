@@ -108,19 +108,21 @@ class EnsembleSession:
         self.caller_id = caller_id
         self._sequence = -1
         self._last_state: str | None = None
+        self._last_source: Literal["agent_state", "playback"] = "agent_state"
         self._queue: asyncio.Queue[tuple[str, dict, asyncio.Future | None]] = asyncio.Queue(128)
         self._task: asyncio.Task | None = None
         self._ready: asyncio.Future | None = None
         self._closed = False
 
-    def _presence(self, state: str, *, interrupted: bool = False) -> dict:
+    def _presence(self, state: str, *, source: Literal["agent_state", "playback"] = "agent_state",
+                  interrupted: bool = False) -> dict:
         self._sequence += 1
         return {
             "session_id": self.room_id,
             "event_id": f"presence-{uuid.uuid4().hex}",
             "sequence": self._sequence,
             "state": state,
-            "source": "agent_state",
+            "source": source,
             "interrupted": interrupted,
         }
 
@@ -135,14 +137,24 @@ class EnsembleSession:
             if future is not None and not future.done():
                 future.set_exception(RuntimeError("Puppeteer ensemble queue overflow"))
 
-    def observe(self, state: Literal["idle", "listening", "speaking"], *, interrupted: bool = False) -> None:
-        """Nonblocking LiveKit state hook, not measured voice playback time."""
-        if state not in STATES:
-            raise ValueError("invalid ensemble presence")
+    def observe(
+        self,
+        state: Literal["idle", "listening", "speaking"],
+        *,
+        source: Literal["agent_state", "playback"] = "agent_state",
+        interrupted: bool = False,
+    ) -> None:
+        """Nonblocking semantic presence, with explicitly attributed timing."""
+        if state not in STATES or source not in {"agent_state", "playback"}:
+            raise ValueError("invalid ensemble presence or timing source")
         if self._closed or self._task is None or self._task.done():
             return
         self._last_state = state
-        self._enqueue("ensemble_presence", self._presence(state, interrupted=interrupted))
+        self._last_source = source
+        self._enqueue(
+            "ensemble_presence",
+            self._presence(state, source=source, interrupted=interrupted),
+        )
 
     async def start(self) -> dict:
         if self._task is not None:
@@ -207,7 +219,7 @@ class EnsembleSession:
                     except TimeoutError:
                         if not self._closed and self._last_state is not None:
                             tool = "ensemble_presence"
-                            args = self._presence(self._last_state)
+                            args = self._presence(self._last_state, source=self._last_source)
                             future = None
                         else:
                             continue
