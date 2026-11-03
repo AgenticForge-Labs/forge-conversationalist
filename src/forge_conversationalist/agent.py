@@ -28,6 +28,7 @@ from .embodiment import EmbodimentSession
 from .ensemble import EnsembleSession
 from .integrations import load_integrations
 from .personality import DEFAULT, Personality, load_personality
+from .robot_rpc import register_robot_rpc
 from .speech_catalog import selected_speech_model
 from .text_hook import install_assistant_text_hook, install_session_state_hook
 from .transcript_rpc import register_transcript_rpc
@@ -307,6 +308,13 @@ async def entrypoint(ctx: object) -> None:
             base_profile=load_profile(),
             current_profile=profile,
         )
+        if ensemble is not None:
+            register_robot_rpc(
+                ctx.room.local_participant,
+                ensemble=ensemble,
+                authorized_identity=authorized_identity,
+                room=ctx.room,
+            )
     # A fixed greeting needs TTS only. Asking the LLM to generate it with only
     # system instructions fails on providers that require a user query and
     # creates an unnecessary model request.
@@ -332,9 +340,11 @@ def _room_instructions(
             "listening/speaking/idle states across its configured performers. These states "
             "are not speech sample timestamps, nor are robot movements evidence "
             "of completed company tasks. Use get_ensemble_status to inspect "
-            "individual outcomes. Use request_ensemble_gesture only when the "
-            "user explicitly requests one named gesture: yes, no, acknowledge, "
-            "or neutral. Never issue raw motion, infer physical completion from "
+            "individual outcomes and each robot's exact approved expressions. "
+            "Use request_ensemble_gesture only when the user explicitly requests "
+            "a gesture for a selected performer; first discover the name and "
+            "performer_id from get_ensemble_status. Never issue raw motion, "
+            "infer physical completion from "
             "accepted admission, or retry unknown outcomes. If a gesture was accepted, "
             "say it was requested, not that it happened. If a performer is blocked, "
             "say its outcome is unconfirmed; never promise it will settle or resume."

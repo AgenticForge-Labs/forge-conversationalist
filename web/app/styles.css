@@ -59,3 +59,15 @@ h2 { text-transform: capitalize; margin: 0; font-size: 21px; }
 .mute-choice { display: flex; align-items: center; gap: 9px; }
 .mute-choice input { width: auto; }
 @media (max-width: 580px) { .preview-grid { grid-template-columns: 1fr; } }
+
+
+.robot-controls { border: 1px solid #425369; border-radius: 12px; padding: 14px; display: grid; gap: 12px; min-width: 0; }
+.robot-controls > .subtle { margin: 0; font-size: 12px; }
+.robot-controls h2 { text-transform: none; }
+.robot-controls .status button { padding: 9px 12px; }
+.robot-performer { border: 1px solid #34485e; border-radius: 12px; padding: 14px; min-width: 0; display: grid; gap: 8px; }
+.robot-performer legend { color: #e4efff; font-weight: 700; padding: 0 5px; }
+.robot-performer .subtle { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.robot-expression-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.robot-expression-grid button { padding: 10px; font-size: 13px; overflow-wrap: anywhere; }
+.robot-revision { opacity: .75; }

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { PresentationPreview } from "./presentation-preview";
+import { RobotControls } from "./robot-controls";
 import {
   BarVisualizer,
   LiveKitRoom,
@@ -522,6 +523,7 @@ function RoomConversation({ speech, microphoneMode, onMicrophoneModeChange, endi
       <div className="presence" aria-live="polite">
         Conversation state: {state === "listening" || state === "speaking" ? state : "idle"}
       </div>
+      <RobotControls />
       <div className="transcript" aria-live="polite" aria-label="Conversation transcript">
         {transcriptRestoreStatus === "loading" && <p className="subtle" role="status">Reconnecting… restoring the conversation.</p>}
         {transcriptRows.length === 0 ? (

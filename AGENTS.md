@@ -53,3 +53,18 @@ PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 i
   LiveKit room packet as evidence of an actual company event.
 - Never automatically speak private notification content; browser
   notification examples must be clearly labeled manual previews.
+
+
+## Native robot expression controls (2026-11-02)
+- Only Puppeteer owns the authoritative, approved finite expression catalog;
+  fetch `ensemble_state.performers[*].expressions` from the same room-owned
+  MCP child, never guess which gestures a robot has.
+- UI and agent tools must use explicit `performer_id` and a currently
+  catalogued name. Automatic speaking/listening/idle are NOT manual gestures.
+- Both robot RPC methods are registered only after authorized ensemble
+  startup and are guarded by the signed LiveKit participant identity.
+  Never move motion policy or hardware permission to the browser.
+- Admission is not physical completion; preserve no retries and honest
+  unknown outcomes. Availability and quarantine remain Puppeteer/SDK-owned.
+- Do not silently import every upstream recording: an immutable reviewed
+  behavior pack is the sole selection boundary.

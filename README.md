@@ -238,7 +238,7 @@ conversation state, not measured audio playout timing. The room keeps
 its current OpenRouter/LiveKit speech models, voice, MCP and Hermes
 tool configuration. The only extra agent tools are read-only
 `get_ensemble_status` and explicitly requested, finite
-`request_ensemble_gesture` (yes/no/acknowledge/neutral).
+`request_ensemble_gesture` (one explicitly selected performer and an exact catalogued finite behavior).
 
 The SO-ARM must have exact operator-reviewed choreography pins and the
 native SDK's independent supervisor/watchdog; simulation cannot
@@ -248,6 +248,22 @@ follow attended qualification before enabling it.
 
 See [Native Ensemble](docs/NATIVE_ENSEMBLE.md) for version-pinned
 installation, contracts, tests, and the physical acceptance checklist.
+
+### Per-robot expression controls
+
+When an operator-authorized native ensemble is configured, the active
+conversation screen shows a **Robots and expressions** panel. Its buttons
+come from Puppeteer's current `ensemble_state.performers[*].expressions`
+catalog: no robot-specific gestures are manufactured by Conversationalist.
+A connected authorized participant can send one named, one-performer
+`forge.request_robot_expression` LiveKit RPC; `forge.get_robots`
+is read-only. The worker verifies its signed participant identity and routes
+the action through the existing serial Puppeteer MCP room and SDK safety.
+Unavailable or blocked performers are shown but cannot be selected.
+`accepted` means a request entered the scheduler, **not** that hardware
+moved or settled. The UI does not retry ambiguous commands. Without an
+authorized ensemble, voice works and this section reports that no robot
+controls are available. See [Native Ensemble](docs/NATIVE_ENSEMBLE.md).
 
 ## Audio devices, expressions and notifications
 

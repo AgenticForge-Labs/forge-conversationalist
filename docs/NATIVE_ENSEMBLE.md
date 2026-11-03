@@ -122,7 +122,10 @@ evidence that a physical STOP has completed.
 
 The LLM may read `get_ensemble_status`; it can use
 `request_ensemble_gesture` **only if the user explicitly asks for**
-one of `yes`, `no`, `acknowledge`, `neutral`. Ordinary
+a named finite expression on one selected performer. The names are obtained
+from Puppeteer's per-performer catalog rather than an application-wide
+hard-coded allowlist. Reachy can expose reviewed yes/no and pinned emotions;
+StackChan and SO-ARM have independent available programs. Ordinary
 speaking/listening/idle runs deterministically through the LiveKit
 state hook without agent tool calls. A new expression gets a unique ID
 and is never automatically retried on an ambiguous outcome. Accepted
@@ -168,3 +171,30 @@ any future synchronization claim.
 A separate follow-on migration is required for the stock 4G app's exact
 personality/business tools and any real output-device playback hooks.
 The semantic bridge by itself cannot claim that those have migrated.
+
+
+## Browser robot-control transport
+
+Puppeteer PR #15 adds immutable per-robot `expressions`,
+`presence_behaviors` and `behavior_revision` to the existing
+`ensemble_state` snapshot. `forge.get_robots` presents this catalog
+read-only to the signed LiveKit room participant.
+`forge.request_robot_expression` accepts only
+`{"performer_id": "...", "expression": "..."}` from the same authorized
+participant, and uses `EnsembleSession.express` and the same room-owned
+MCP child as natural presence. It re-checks catalog support before dispatch,
+then targets only that performer. It does not expose an arbitrary SDK
+tool or a second robot owner.
+
+These controls expose **all finite behaviors approved in the currently
+installed per-robot pack**. They do not automatically enable unreviewed
+official Reachy recordings or dances, unavailable StackChan firmware
+capabilities, or unqualified SO-ARM choreography. Automatic
+idle/listening/speaking are shown as presence indicators, not manual
+gesture buttons.
+
+An action response may show `accepted` and `completion: unconfirmed`.
+For real confirmation, inspect subsequent action evidence and hardware
+observations. A timeout does not authorize a retry. Real LiveKit RPC,
+exact user permission, web layout and robot hardware require local
+acceptance after CI.
