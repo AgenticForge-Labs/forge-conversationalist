@@ -28,6 +28,25 @@ Future coherent changes after PR #3:
   after its independent talking/idle and SDK work is integrated.
 - Full Hermes interactive session continuity and multiple participants/
   input arbitration, separately qualified.
+- Cross-agent operational observability through Platform OpenTelemetry. Add
+  privacy-safe spans/events for agent tool invocations and outcomes, including
+  admission, completion, failure, timeout/unknown and cancellation/STOP status;
+  correlate Conversationalist call IDs with Puppeteer action IDs and preserve
+  Platform's durable evidence/event ownership. Do not export tool arguments,
+  prompts, transcripts, audio, credentials or raw robot coordinates. Treat OTel
+  as a monitoring projection, not the authoritative action journal. This is a
+  planned cross-repository slice; no end-to-end agent-to-Platform exporter or
+  collector acceptance is claimed yet.
+- Puppeteer attended shutdown acceptance: investigate abrupt session endings
+  that leave motor noise or an unconfirmed native pose. Current adapter teardown
+  requests STOP but Reachy's `goto_target` has no independent stop acknowledgement;
+  the adapter has startup wake-up and captured-neutral return, but no approved
+  sleep operation. The current daemon is configured to persist after room close
+  and is launched with `--no-goto-sleep-on-stop`, so room close does not invoke
+  the daemon's sleep-on-stop path. Define a reviewed shutdown lifecycle and
+  evidence contract before another physical trial. Do not equate a longer delay,
+  quiet observation, SDK task return or host cancellation with confirmed
+  sleep/settling, and do not auto-retry an unknown action.
 
 PRs already merged are not claimed to have passed remote provider or
 physical hardware tests. Main contains reusable code, not a live deployment.
