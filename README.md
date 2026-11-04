@@ -1,5 +1,40 @@
 # Forge Conversationalist
 
+## Company operating role — November 2026
+
+**Conversationalist/4G is a realtime human interface, not the company's chief
+agent.** LiveKit owns audio/room state; Conversationalist owns its lightweight
+voice-agent configuration, optional tools and room presentation. Business
+Engine owns company/role intent; Platform owns WorkItems, Hatchet execution,
+credential/approval policy, MCP federation and durable evidence; Hermes owns
+its own execution sessions; Puppeteer owns semantic robot performance and
+native SDKs own physical safety.
+
+An authenticated utterance may request a narrowly permitted company action,
+but a spoken request, prompt, MCP tool listing or agent answer is not an
+approval to publish, spend, alter orders, deploy software or move hardware.
+Voice barge-in interrupts playout, **not** a confirmed external operation.
+Do not create a second Executive, company-task store, general MCP proxy or
+background decision loop here. Bounded result and source receipts must come
+from the owning Platform/Business Engine path. An owner can ask 4G to
+*suggest* the next step without granting it authority to execute it.
+
+**Next local acceptance** (separate from GitHub CI): run a no-robot LiveKit
+session; verify owner identity and explicit MCP grants; request a harmless
+Business Engine read/WorkItem and poll for its *actual terminal state*;
+verify private fields stay out of public speech and denied tools are blocked;
+then test room restart, interruption and ambiguous responses. Robot
+presence and speech/gesture cues require separate Puppeteer hardware gates,
+including neutral/sleep and failure quarantine; never infer safe motor state
+from closing a room.
+
+- [Company autonomy/delegation plan](https://github.com/AgenticForge-Labs/agenticforge-platform/blob/main/docs/company-control-and-delegation.md)
+- [Activation roadmap](https://github.com/AgenticForge-Labs/agenticforge-platform/blob/main/docs/company-activation-roadmap-2026-11.md)
+- [Platform ContextForge acceptance](https://github.com/AgenticForge-Labs/agenticforge-platform/blob/main/docs/contextforge-development-operations.md)
+
+**Status:** this is an operating boundary and test plan, not proof of
+live company gateway, production speaker, or unattended hardware acceptance.
+
 ## Development mail notifications through Hatchet Streams
 
 The experimental `CONVERSATIONALIST_MAIL_STREAMS=1` feature runs **only** in
