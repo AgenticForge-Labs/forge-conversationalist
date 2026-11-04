@@ -126,17 +126,21 @@ def build_voice_session(
     # committed, so the model's think time overlaps the end of their speech.
     # Measured LLM time-to-first-sentence is ~0.5-1.0 s, which is the amount
     # this can hide. Operators can still disable it explicitly.
-    preemptive = os.getenv("CONVERSATIONALIST_PREEMPTIVE_GENERATION", "true").strip().lower()
-    if preemptive not in {"false", "0", "no"}:
-        # Speculative TTS additionally hides the synthesis step, at the cost of
-        # occasionally synthesizing audio that is never played.
-        preemptive_tts = os.getenv(
-            "CONVERSATIONALIST_PREEMPTIVE_TTS", "true"
-        ).strip().lower() not in {"false", "0", "no"}
-        turn_handling["preemptive_generation"] = {
-            "enabled": True,
-            "preemptive_tts": preemptive_tts,
-        }
+    # LiveKit 1.8 enables speculative generation by default, so an A/B that
+    # merely omits the key measures nothing. Set it explicitly both ways.
+    preemptive_on = os.getenv(
+        "CONVERSATIONALIST_PREEMPTIVE_GENERATION", "true"
+    ).strip().lower() not in {"false", "0", "no"}
+    # A/B on 2026-11-04: speculative TTS measured no better than the SDK
+    # default (median commit->speaking 1032 ms with it, 816 ms without), so it
+    # stays opt-in rather than paying for audio that may be discarded.
+    preemptive_tts = os.getenv(
+        "CONVERSATIONALIST_PREEMPTIVE_TTS", "false"
+    ).strip().lower() not in {"false", "0", "no"}
+    turn_handling["preemptive_generation"] = {
+        "enabled": preemptive_on,
+        "preemptive_tts": preemptive_tts and preemptive_on,
+    }
     if turn_pacing != "standard":
         delay = 0.25 if turn_pacing == "quick" else 1.2
         turn_handling["endpointing"] = {"mode": "fixed", "min_delay": delay, "max_delay": delay}
