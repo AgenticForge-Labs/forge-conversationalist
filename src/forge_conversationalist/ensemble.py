@@ -412,6 +412,23 @@ class EnsembleSession:
             "performer_ids": [performer_id],
         })
 
+    async def reconnect(self) -> dict:
+        """Release and re-open the room-owned MCP child and its SDK sessions.
+
+        Used by the operator's Connect/Disconnect controls: disconnecting frees
+        the robots' serial/daemon resources without ending the voice room.
+        """
+        await self.close()
+        self._task = None
+        self._closed = False
+        self._ready = None
+        while True:
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        return await self.start()
+
     async def close(self) -> None:
         if self._task is None:
             return

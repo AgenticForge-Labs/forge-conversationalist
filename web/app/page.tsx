@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PresentationPreview } from "./presentation-preview";
 import { RobotControls } from "./robot-controls";
 import { AudioWaveform } from "./audio-waveform";
@@ -76,6 +76,87 @@ function AudioDevicePicker({ kind, label }: { kind: "audioinput" | "audiooutput"
       </select>
       {error && <span className="error" role="alert">{error}</span>}
     </label>
+  );
+}
+
+
+type MicState = { source: string; muted: boolean; volume: number };
+
+function MicLevelControls() {
+  const [state, setState] = useState<MicState | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const response = await fetch("/api/mic", { cache: "no-store", credentials: "same-origin" });
+      if (!response.ok) throw new Error("unavailable");
+      setState((await response.json()) as MicState);
+      setError("");
+    } catch {
+      setError("Capture device level is not available for this browser host.");
+    }
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  async function update(patch: { mute?: boolean; volume?: number }) {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/mic", {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!response.ok) throw new Error("failed");
+      setState((await response.json()) as MicState);
+      setError("");
+    } catch {
+      setError("Could not change the capture device.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <fieldset className="device-chooser">
+      <legend>Capture device level (host)</legend>
+      {error ? <p className="subtle" role="status">{error}</p> : null}
+      {state ? (
+        <>
+          <label>
+            <input
+              type="checkbox"
+              checked={!state.muted}
+              disabled={busy}
+              onChange={(event) => void update({ mute: !event.target.checked })}
+            />{" "}
+            Microphone unmuted
+          </label>
+          <label htmlFor="mic-volume">Input volume: {state.volume}%</label>
+          <input
+            id="mic-volume"
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={state.volume}
+            disabled={busy}
+            onChange={(event) => setState({ ...state, volume: Number(event.target.value) })}
+            onMouseUp={(event) => void update({ volume: Number((event.target as HTMLInputElement).value) })}
+            onTouchEnd={(event) => void update({ volume: Number((event.target as HTMLInputElement).value) })}
+          />
+          <p className="subtle">Controls the host&apos;s default capture device (mute and gain). Device: {state.source.split(".").slice(-1)[0]}</p>
+          <button type="button" className="secondary" disabled={busy} onClick={() => void refresh()}>
+            Refresh level
+          </button>
+        </>
+      ) : (
+        <p className="subtle">Reading capture device…</p>
+      )}
+    </fieldset>
   );
 }
 
@@ -490,6 +571,7 @@ function RoomConversation({ speech, microphoneMode, onMicrophoneModeChange, endi
         <AudioDevicePicker kind="audiooutput" label="Speaker" />
         <p className="subtle">Use any system-supported device. Some browsers cannot switch speaker output.</p>
       </fieldset>
+      <MicLevelControls />
       <fieldset className="device-chooser">
         <legend>Microphone sensitivity</legend>
         <label htmlFor="vad-sensitivity">Speech detection</label>

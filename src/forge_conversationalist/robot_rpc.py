@@ -103,6 +103,28 @@ def register_robot_rpc(
             raise reject("Capability catalog exceeds the bounded response size")
         return response
 
+    async def set_connection(data: object) -> str:
+        check_identity(data)
+        payload = getattr(data, "payload", None)
+        if not isinstance(payload, str) or len(payload.encode("utf-8")) > _MAX_PAYLOAD_BYTES:
+            raise reject("Invalid robot connection request")
+        try:
+            request = json.loads(payload)
+        except ValueError:
+            raise reject("Invalid robot connection request") from None
+        if not isinstance(request, dict) or set(request) != {"connected"} or not isinstance(request["connected"], bool):
+            raise reject("Robot connection requires one boolean")
+        try:
+            if request["connected"]:
+                state = await ensemble.reconnect()
+            else:
+                await ensemble.close()
+                state = {"schema": SCHEMA, "performers": {}, "disconnected": True}
+        except (RuntimeError, ValueError, TimeoutError):
+            raise reject("Robot connection change failed") from None
+        return json.dumps({"outcome": "ok", "state": state}, separators=(",", ":"), ensure_ascii=True)
+
     register("forge.get_robots", get_robots)
+    register("forge.set_robot_connection", set_connection)
     register("forge.get_capabilities", get_capabilities)
     register("forge.request_robot_expression", request_robot_expression)

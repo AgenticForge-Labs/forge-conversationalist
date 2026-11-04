@@ -59,8 +59,10 @@ export function RobotControls() {
   const [unavailable, setUnavailable] = useState("");
   const [running, setRunning] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Record<string, string>>({});
+  const [changingConnection, setChangingConnection] = useState(false);
+  const [connected, setConnected] = useState(true);
 
-  const callRobot = useCallback(async (method: string, body: Record<string, string>) => {
+  const callRobot = useCallback(async (method: string, body: Record<string, unknown>) => {
     if (room.state !== ConnectionState.Connected) throw new Error("Room is disconnected");
     const agent = findAgent(room);
     if (!agent) throw new Error("Voice agent is not connected");
@@ -116,6 +118,32 @@ export function RobotControls() {
     };
   }, [refresh, room]);
 
+  async function setRobotConnection(next: boolean) {
+    if (changingConnection) return;
+    setChangingConnection(true);
+    setReceipt((previous) => ({ ...previous, connection: next ? "Connecting robots…" : "Disconnecting robots…" }));
+    try {
+      await callRobot("forge.set_robot_connection", { connected: next });
+      setConnected(next);
+      setReceipt((previous) => ({
+        ...previous,
+        connection: next
+          ? "Robots reconnected. Expressions refresh automatically."
+          : "Robots disconnected and their devices released.",
+      }));
+      if (next) await refresh();
+      else setCatalog(null);
+    } catch {
+      // A transport error may occur after the change was applied.
+      setReceipt((previous) => ({
+        ...previous,
+        connection: "Connection change unconfirmed. Refresh robots before acting.",
+      }));
+    } finally {
+      setChangingConnection(false);
+    }
+  }
+
   async function request(performerId: string, expression: string) {
     const id = `${performerId}:${expression}`;
     if (running !== null) return;
@@ -153,7 +181,17 @@ export function RobotControls() {
           <p className="eyebrow">Forge Puppeteer</p>
           <h2>Robots and expressions</h2>
         </div>
-        <button type="button" className="secondary" onClick={() => void refresh()}>Refresh robots</button>
+        <div className="robot-actions">
+          <button type="button" className="secondary" onClick={() => void refresh()}>Refresh robots</button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={changingConnection}
+            onClick={() => void setRobotConnection(!connected)}
+          >
+            {changingConnection ? "Working…" : connected ? "Disconnect robots" : "Connect robots"}
+          </button>
+        </div>
       </div>
       <p className="subtle">Only actions advertised by each operator-approved robot are shown. Idle, listening and speaking are automatic. A requested gesture is not proof of physical completion.</p>
       {capabilities && (
@@ -177,6 +215,7 @@ export function RobotControls() {
         </fieldset>
       )}
       {unavailable ? <p className="subtle" role="status">{unavailable}</p> : null}
+      {receipt.connection ? <p className="subtle" role="status">{receipt.connection}</p> : null}
       {catalog && Object.entries(catalog.performers).map(([performerId, performer]) => {
         const actions = Array.isArray(performer.expressions)
           ? performer.expressions.filter((expression) => typeof expression === "string")
