@@ -7,7 +7,11 @@ each tool call and enforce its own grants.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,6 +19,10 @@ if TYPE_CHECKING:
     from .ensemble import EnsembleSession
 
 from .hermes import HermesRunsClient, HermesUnavailable
+
+logger = logging.getLogger(__name__)
+_HERMES_WATCH_TIMEOUT_S = 900.0
+_HERMES_WATCH_INTERVAL_S = 2.5
 from .integrations import Integrations
 
 
@@ -46,6 +54,7 @@ def build_assistant_tools(
     function_tool_factory: object | None = None,
     embodiment_session: EmbodimentSession | None = None,
     ensemble_session: EnsembleSession | None = None,
+    hermes_completion_notifier: Callable[[str], Awaitable[None]] | None = None,
 ) -> list[object]:
     """Construct tools for one room; no integrations means an empty list."""
     tools: list[object] = []
@@ -148,15 +157,44 @@ def build_assistant_tools(
 
         client = hermes_client or HermesRunsClient(integrations.hermes)
 
+        async def watch_run(run_id: str) -> None:
+            """Announce a terminal run once, without the user asking for status.
+
+            The agent still reads the real status before speaking, so the
+            notification carries evidence rather than a completion claim.
+            """
+            deadline = time.monotonic() + _HERMES_WATCH_TIMEOUT_S
+            while time.monotonic() < deadline:
+                await asyncio.sleep(_HERMES_WATCH_INTERVAL_S)
+                try:
+                    state = await client.status(run_id)
+                except (HermesUnavailable, ValueError):
+                    continue
+                status = state.get("status")
+                if status not in {"completed", "failed", "cancelled", "interrupted"}:
+                    continue
+                if status == "completed":
+                    report = f"completed. Answer: {state.get('output', '')[:800]}"
+                else:
+                    report = f"ended with status {status}."
+                try:
+                    await hermes_completion_notifier(f"Hermes run {run_id} {report}")
+                except Exception:
+                    logger.exception("Hermes completion announcement failed")
+                return
+
         async def delegate_to_hermes(task: str) -> str:
             """Delegate one substantive task to Hermes; returns a tracked run ID, not a success claim."""
             try:
                 receipt = await client.submit(task)
             except (HermesUnavailable, ValueError):
                 return "Hermes could not confirm admission. Do not retry automatically."
+            if hermes_completion_notifier is not None:
+                asyncio.create_task(watch_run(receipt["run_id"]))
             return (
                 f"Hermes accepted run {receipt['run_id']} with status {receipt['status']}. "
-                "It is not necessarily complete. Use check_hermes_run to get the result."
+                "It is not necessarily complete. The room is notified when it finishes; "
+                "use check_hermes_run if the user asks for progress."
             )
 
         async def check_hermes_run(run_id: str) -> str:

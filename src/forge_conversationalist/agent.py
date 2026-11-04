@@ -306,6 +306,29 @@ async def entrypoint(ctx: object) -> None:
             ensemble = None
     # An opt-in TTS node observes generated PCM without changing LiveKit
     # playback; missing Puppeteer support leaves the ordinary agent path.
+    class _SpokenHermesNotifier:
+        """Speak a finished Hermes result without being asked for status."""
+
+        def __init__(self) -> None:
+            self.session = None
+
+        async def __call__(self, text: str) -> None:
+            session = self.session
+            if session is None:
+                return
+            try:
+                await session.generate_reply(
+                    instructions=(
+                        "A delegated Hermes task has finished. Tell the user the "
+                        "result briefly and naturally in your own voice, and say "
+                        "plainly if it failed or was cut off. Do not add anything "
+                        "beyond this report: " + text
+                    )
+                )
+            except Exception:
+                logger.exception("Hermes completion announcement failed")
+
+    hermes_notifier = _SpokenHermesNotifier()
     agent_class = (
         agent_class_with_speech_envelope(Agent, ensemble.offer_speech_envelope)
         if envelope_opt_in and ensemble is not None else Agent
@@ -319,9 +342,11 @@ async def entrypoint(ctx: object) -> None:
             agent_integrations,
             embodiment_session=embodiment if authorized_identity else None,
             ensemble_session=ensemble if authorized_identity else None,
+            hermes_completion_notifier=hermes_notifier,
         ),
     )
     await session.start(room=ctx.room, agent=agent, room_options=room_options)
+    hermes_notifier.session = session
     if playback_presence is not None and ensemble is not None:
         output = getattr(getattr(session, "output", None), "audio", None)
         try:

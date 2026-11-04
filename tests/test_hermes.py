@@ -133,3 +133,46 @@ def test_invalid_or_unknown_hermes_run_is_never_reported_as_completed() -> None:
                                       function_tool_factory=factory))
     assert "could not confirm" in asyncio.run(tools["delegate_to_hermes"]("test"))
     assert "Do not claim" in asyncio.run(tools["check_hermes_run"]("other"))
+
+
+def test_completion_is_announced_without_polling_by_the_user(monkeypatch) -> None:
+    """A finished run reaches the room as speech, not a silent receipt."""
+    import forge_conversationalist.assistant_tools as tools_module
+
+    monkeypatch.setattr(tools_module, "_HERMES_WATCH_INTERVAL_S", 0.01)
+    monkeypatch.setattr(tools_module, "_HERMES_WATCH_TIMEOUT_S", 2.0)
+
+    class Client:
+        async def submit(self, task):
+            return {"run_id": "run_done", "status": "started"}
+
+        async def status(self, run_id):
+            return {"run_id": run_id, "status": "completed", "output": "396"}
+
+    announced: list[str] = []
+
+    async def notifier(text: str) -> None:
+        announced.append(text)
+
+    def factory(function, *, name, description):
+        return function
+
+    built = build_assistant_tools(
+        Integrations(hermes=HermesConfig(url="http://127.0.0.1:8642", key="k")),
+        hermes_client=Client(),
+        function_tool_factory=factory,
+        hermes_completion_notifier=notifier,
+    )
+    delegate = next(t for t in built if t.__name__ == "delegate_to_hermes")
+
+    async def scenario():
+        reply = await delegate("compute 17*23+5")
+        assert "accepted run run_done" in reply
+        for _ in range(200):
+            if announced:
+                return reply
+            await asyncio.sleep(0.01)
+        raise AssertionError("completion was never announced")
+
+    asyncio.run(scenario())
+    assert "completed" in announced[0] and "396" in announced[0]
