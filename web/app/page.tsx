@@ -96,6 +96,7 @@ function RoomConversation({ speech, microphoneMode, onMicrophoneModeChange, endi
   const [speechError, setSpeechError] = useState("");
   const [changingSpeech, setChangingSpeech] = useState(false);
   const [pttHeld, setPttHeld] = useState(false);
+  const [listening, setListening] = useState(false);
   const [microphoneError, setMicrophoneError] = useState("");
   const [restoredTranscript, setRestoredTranscript] = useState<TranscriptMessage[]>([]);
   const [transcriptRestoreStatus, setTranscriptRestoreStatus] = useState<"" | "loading" | "unavailable">(resumed ? "loading" : "");
@@ -153,6 +154,7 @@ function RoomConversation({ speech, microphoneMode, onMicrophoneModeChange, endi
   async function setMicrophoneEnabled(enabled: boolean) {
     try {
       await room.localParticipant.setMicrophoneEnabled(enabled);
+      setListening(enabled && microphoneModeRef.current === "continuous");
     } catch {
       setMicrophoneError(enabled
         ? "Could not start the microphone. Check browser permission and try again."
@@ -429,6 +431,24 @@ function RoomConversation({ speech, microphoneMode, onMicrophoneModeChange, endi
           <option value="continuous">Continuous listening</option>
           <option value="press-to-talk">Press to talk</option>
         </select>
+        {microphoneMode === "continuous" && (
+          <button
+            type="button"
+            className={listening ? "secondary" : undefined}
+            disabled={!roomInputReady}
+            aria-pressed={listening}
+            onClick={() => void setMicrophoneEnabled(!listening)}
+          >
+            {listening ? "Stop listening" : "Start listening"}
+          </button>
+        )}
+        {microphoneMode === "continuous" && (
+          <p className="subtle" role="status">
+            {listening
+              ? "The microphone is open. Use Stop listening to close it while the room stays connected."
+              : "The microphone is closed. Nothing is captured until you start listening."}
+          </p>
+        )}
         {microphoneMode === "press-to-talk" && (
           <>
             <button
