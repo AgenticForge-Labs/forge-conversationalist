@@ -30,9 +30,7 @@ def _fake_adapters():
     )
     openai = SimpleNamespace(
         STT=MagicMock(side_effect=lambda **kw: ("openrouter-stt", kw)),
-        LLM=SimpleNamespace(
-            with_openrouter=MagicMock(side_effect=lambda **kw: ("openrouter-llm", kw))
-        ),
+        LLM=MagicMock(side_effect=lambda **kw: ("openrouter-llm", kw)),
         TTS=MagicMock(side_effect=lambda **kw: ("openrouter-tts", kw)),
     )
     silero = SimpleNamespace(VAD=SimpleNamespace(load=MagicMock(return_value="silero")))
@@ -88,7 +86,7 @@ def test_livekit_default_retains_original_models_and_no_new_key() -> None:
     assert sdk.inference.STT.call_count == 1
     assert not openai.STT.called
     assert not openai.TTS.called
-    assert not openai.LLM.with_openrouter.called
+    assert not openai.LLM.called
 
 
 def test_openrouter_stages_use_fixed_base_and_transcription_http() -> None:
@@ -104,14 +102,13 @@ def test_openrouter_stages_use_fixed_base_and_transcription_http() -> None:
             "use_realtime": False,
         },
     )
-    assert result["llm"] == (
-        "openrouter-llm",
-        {
-            "model": profile.llm_model,
-            "base_url": OPENROUTER_API_BASE,
-            "api_key": "test-key",
-        },
-    )
+    llm_name, llm_kwargs = result["llm"]
+    assert llm_name == "openrouter-llm"
+    assert llm_kwargs["model"] == profile.llm_model
+    assert llm_kwargs["base_url"] == OPENROUTER_API_BASE
+    assert llm_kwargs["api_key"] == "test-key"
+    # Voice turns must not spend hidden reasoning tokens before speaking.
+    assert llm_kwargs["extra_body"] == {"reasoning": {"enabled": False}}
     assert result["tts"] == (
         "openrouter-tts",
         {
@@ -160,7 +157,7 @@ def test_hybrid_selects_one_openrouter_stage() -> None:
     assert result["llm"][0] == "openrouter-llm"
     assert result["tts"][0] == "livekit-tts"
     assert sdk.inference.STT.call_count == 1
-    assert openai.LLM.with_openrouter.call_count == 1
+    assert openai.LLM.call_count == 1
 
 
 def test_each_stage_can_be_overridden_without_model_mismatch() -> None:
@@ -211,7 +208,7 @@ def test_openrouter_key_required_before_any_provider_calls() -> None:
         )
     assert not sdk.AgentSession.called
     assert not sdk.inference.STT.called
-    assert not openai.LLM.with_openrouter.called
+    assert not openai.LLM.called
     assert not silero.VAD.load.called
 
 

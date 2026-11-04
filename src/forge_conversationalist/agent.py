@@ -116,15 +116,7 @@ def build_voice_session(
             use_realtime=False,  # OpenRouter offers buffered transcription, not WS STT
         )
     )
-    llm = (
-        sdk.inference.LLM(model=profile.llm_model)
-        if profile.llm_provider == "livekit"
-        else openai_plugin.LLM.with_openrouter(
-            model=profile.llm_model,
-            api_key=api_key,
-            base_url=OPENROUTER_API_BASE,
-        )
-    )
+    llm = _build_llm(profile, api_key=api_key, openai_plugin=openai_plugin, sdk=sdk)
     tts = _build_tts(profile, api_key=api_key, openai_plugin=openai_plugin,
                      tts_sample_rate=tts_sample_rate, sdk=sdk)
     turn_handling = {
@@ -169,6 +161,42 @@ def build_voice_session(
         tts=tts,
         vad=vad,
         turn_handling=sdk.TurnHandlingOptions(**turn_handling),
+    )
+
+
+def _build_llm(
+    profile: CloudProfile,
+    *,
+    api_key: str | None = None,
+    openai_plugin: object | None = None,
+    sdk: object | None = None,
+) -> object:
+    """Build the conversational LLM, with reasoning disabled for voice.
+
+    A reasoning-default model emits hidden reasoning tokens before any spoken
+    text. Measured on qwen3.5-9b: no content at all inside a 40-token budget,
+    versus 0.59 s to first token with reasoning off. Voice turns want the
+    answer, not a scratchpad, so the OpenRouter path disables it by default.
+    Set CONVERSATIONALIST_LLM_REASONING=auto to keep the model default.
+    """
+    if profile.llm_provider == "livekit":
+        if sdk is None:
+            from livekit import agents as sdk
+        return sdk.inference.LLM(model=profile.llm_model)
+    if openai_plugin is None:
+        from livekit.plugins import openai as openai_plugin
+    key = api_key if api_key is not None else os.getenv("OPENROUTER_API_KEY")
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
+    mode = os.getenv("CONVERSATIONALIST_LLM_REASONING", "off").strip().lower()
+    extra: dict[str, object] = {}
+    if mode not in {"auto", "on", "true", "1", "yes"}:
+        extra["reasoning"] = {"enabled": False}
+    return openai_plugin.LLM(
+        model=profile.llm_model,
+        api_key=key,
+        base_url=OPENROUTER_API_BASE,
+        extra_body=extra,
     )
 
 
