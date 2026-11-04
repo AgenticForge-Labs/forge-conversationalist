@@ -11,8 +11,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from forge_conversationalist.mail_stream_notifications import (
-    AmbientMailNotifications, MailStreamConfig, SUMMARY,
-    load_mail_stream_config, parse_mail_notice,
+    SUMMARY,
+    AmbientMailNotifications,
+    MailStreamConfig,
+    load_mail_stream_config,
+    parse_mail_notice,
 )
 
 
