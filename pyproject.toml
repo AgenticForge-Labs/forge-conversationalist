@@ -11,6 +11,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+mail-streams = ["hatchet-sdk>=1.44,<2"]
 
 [project.scripts]
 forge-conversationalist = "forge_conversationalist.agent:main"

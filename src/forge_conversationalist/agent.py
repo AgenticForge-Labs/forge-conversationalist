@@ -29,6 +29,7 @@ from .config import (
 from .embodiment import EmbodimentSession
 from .ensemble import EnsembleSession
 from .integrations import load_integrations
+from .mail_stream_notifications import AmbientMailNotifications, load_mail_stream_config
 from .personality import DEFAULT, Personality, load_personality
 from .playback_presence import PlaybackPresence
 from .robot_rpc import register_robot_rpc
@@ -479,6 +480,18 @@ async def entrypoint(ctx: object) -> None:
     # system instructions fails on providers that require a user query and
     # creates an unnecessary model request.
     await session.say(personality.greeting)
+    # Opt-in local-only company event notifications. The trusted Python
+    # worker holds the Hatchet credential; nothing reaches the browser
+    # or a robot except a bounded private presentation cue and generic TTS.
+    if authorized_identity:
+        mail_stream_config = load_mail_stream_config()
+        if mail_stream_config is not None:
+            if agent_integrations.company_services is None and agent_integrations.hermes is None:
+                logger.warning("mail notification demo disabled: no read-only summary capability")
+            else:
+                notifier = AmbientMailNotifications(mail_stream_config)
+                notifier.start(session, ctx.room)
+                ctx.add_shutdown_callback(notifier.close)
 
 
 def _room_instructions(
@@ -493,6 +506,15 @@ def _room_instructions(
     if personality.instructions:
         base = base.replace("You are Forge Conversationalist, a helpful spoken assistant. ", "")
         base = personality.instructions + " " + base
+    if os.getenv("CONVERSATIONALIST_MAIL_STREAMS", "").lower() in {"1", "true", "yes"}:
+        base += (
+            " With operator-enabled company mail notifications, I may announce only "
+            "that new email arrived and ask if you want a summary. A yes means "
+            "read/summarize the latest mail only through currently authorized "
+            "company services or Hermes tools; never guess its contents, "
+            "identify a sender without a read, or send/modify email. "
+            "Never read private mail aloud without the user's explicit yes."
+        )
     config = getattr(integrations, "puppeteer_stdio", None)
     if getattr(integrations, "ensemble", None) is not None:
         return base + (
