@@ -678,18 +678,28 @@ def _profile_for_job(profile: CloudProfile, metadata: str) -> CloudProfile:
 
 
 def _requested_vad_sensitivity(metadata: str) -> str:
-    """Read only a supported VAD preset from server-authored job metadata."""
+    """Read a supported VAD preset, from room metadata or the worker default.
+
+    The browserless audio participant sends no metadata, so without an
+    environment default every room ran the SDK's most eager threshold and
+    transcribed background noise as words.
+    """
+    fallback = os.getenv(
+        "CONVERSATIONALIST_VAD_SENSITIVITY", "standard"
+    ).strip().lower()
+    if fallback not in VAD_SENSITIVITY_THRESHOLDS:
+        fallback = "standard"
     if not metadata:
-        return "standard"
+        return fallback
     try:
         request = json.loads(metadata)
     except (TypeError, json.JSONDecodeError):
-        return "standard"
+        return fallback
     sensitivity = request.get("vad_sensitivity") if isinstance(request, dict) else None
     return (
         sensitivity
         if isinstance(sensitivity, str) and sensitivity in VAD_SENSITIVITY_THRESHOLDS
-        else "standard"
+        else fallback
     )
 
 
