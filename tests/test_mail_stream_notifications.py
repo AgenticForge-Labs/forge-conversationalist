@@ -18,7 +18,6 @@ from forge_conversationalist.mail_stream_notifications import (
     parse_mail_notice,
 )
 
-
 BUSINESS = "12345678-1234-4234-9234-123456789012"
 
 
