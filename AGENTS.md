@@ -1,5 +1,25 @@
 # Repository development rules
 
+## November 2026 company interface acceptance
+
+Treat Conversationalist/4G as an optional owner-facing LiveKit interface,
+**not** the six-role Business Engine's Executive, Platform Work Coordinator,
+a privileged MCP server, or Hermes' session authority. The Business Engine
+chooses company semantic work; the Platform authenticates/adopts WorkItems,
+enforces permissions and approvals, and retains durable evidence.
+
+For local end-to-end acceptance, begin with no robot: verify authenticated
+owner intent, exact server-side tool grants, a bounded Business Engine
+request or read, completion-aware result polling, sourced status, interruption
+without automatic retry, and no secret/private-content disclosure. Never
+assume that voice interruption cancels an already admitted consequential
+action. Physical startup, neutral/sleep, STOP and connection uncertainty
+remain owned by Puppeteer/SDKs and require attended validation.
+
+See [company control](https://github.com/AgenticForge-Labs/agenticforge-platform/blob/main/docs/company-control-and-delegation.md)
+and [activation roadmap](https://github.com/AgenticForge-Labs/agenticforge-platform/blob/main/docs/company-activation-roadmap-2026-11.md).
+No production action is authorized by these documentation changes.
+
 Read organization-level `development.md` and `architecture.md` first.
 GitHub main is the authoritative integrated state; inspect open PRs.
 PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 is merged; this repository's PR #9 connects an authorized LiveKit room to its fixed semantic MCP interface.
