@@ -118,7 +118,7 @@ def test_hermes_livekit_tools_return_run_receipt_and_status(tmp_path, monkeypatc
     receipt = asyncio.run(dict(tools)["delegate_to_hermes"]("Check the build"))
     # The spoken receipt must not leak the internal run identifier.
     assert "run_abc" not in receipt
-    assert "working on it" in receipt
+    assert "now working on" in receipt and "independently" in receipt
     result = asyncio.run(dict(tools)["check_hermes_run"]("build"))
     # The task is remembered by topic even before it finishes.
     assert "Check the build" in result
@@ -173,7 +173,7 @@ def test_completion_is_announced_without_polling_by_the_user(tmp_path, monkeypat
 
     async def scenario():
         reply = await delegate("compute 17*23+5")
-        assert "run_done" not in reply and "working on it" in reply
+        assert "run_done" not in reply and "now working on" in reply
         for _ in range(200):
             if announced:
                 return reply

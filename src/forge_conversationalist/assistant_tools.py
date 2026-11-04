@@ -207,8 +207,9 @@ def build_assistant_tools(
             if hermes_completion_notifier is not None:
                 asyncio.create_task(watch_run(receipt["run_id"]))
             return (
-                "Hermes is working on it. The room will be told when the answer "
-                "is ready; there is no need to ask again."
+                f"Hermes is now working on \"{task[:120]}\". Tasks run "
+                "independently, so keep asking new questions; each answer is "
+                "announced when it arrives."
             )
 
         async def check_hermes_run(topic: str = "") -> str:
@@ -235,9 +236,12 @@ def build_assistant_tools(
                     description=(
                         "Use this immediately for anything you cannot answer or do "
                         "yourself: current date/time, live facts, web lookups, research, "
-                        "coding, calculations beyond trivial arithmetic. Do not ask the "
-                        "user for permission first and do not claim the answer yet; the "
-                        "room is told when it is ready."
+                        "coding, calculations beyond trivial arithmetic. Never say you "
+                        "lack access to the time or to live information; delegate it. "
+                        "Hermes runs several tasks at once, so a new question is sent "
+                        "even while another is still running; never wait for a pending "
+                        "task before starting the next one. Do not ask for permission "
+                        "and do not claim an answer before it arrives."
                     ),
                 ),
                 function_tool_factory(
