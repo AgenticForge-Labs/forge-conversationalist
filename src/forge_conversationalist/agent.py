@@ -7,6 +7,7 @@ transport, model client, agent memory, MCP gateway or robot is created here.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -45,8 +46,11 @@ INSTRUCTIONS = (
     "business information when those integrations are unavailable. "
     "Use only tools actually available in this room. Never imply an MCP or "
     "robot action was successful without a returned confirmed outcome. "
-    "Hermes delegation starts an asynchronous run: acceptance is not completion. "
-    "Offer to check the actual run status when the user asks about progress. "
+    "Anything you cannot do yourself goes straight to Hermes without asking the "
+    "user for permission first: the current date or time, live facts, web lookups, "
+    "research, coding, and anything beyond trivial arithmetic. Say only that Hermes "
+    "is working on it; never read task identifiers aloud, and never claim the answer "
+    "before it arrives. The room announces finished results by itself. "
     "Physical motion and consequential changes require the gateway's own "
     "permission, validation, and human approval. When a restricted Reachy move "
     "tool is available, call it only after the user explicitly asks for a "
@@ -316,17 +320,31 @@ async def entrypoint(ctx: object) -> None:
             session = self.session
             if session is None:
                 return
-            try:
-                await session.generate_reply(
-                    instructions=(
-                        "A delegated Hermes task has finished. Tell the user the "
-                        "result briefly and naturally in your own voice, and say "
-                        "plainly if it failed or was cut off. Do not add anything "
-                        "beyond this report: " + text
+            # Announce at a natural pause: speaking over the user or over the
+            # agent's own turn is what made earlier results inaudible.
+            for attempt in range(12):
+                state = getattr(session, "agent_state", "idle")
+                if state in {"idle", "listening"}:
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                logger.warning("Hermes announcement deferred: room stayed busy")
+                return
+            for attempt in range(3):
+                try:
+                    logger.info("announcing finished Hermes task")
+                    await session.generate_reply(
+                        instructions=(
+                            "A delegated Hermes task has finished. Tell the user the "
+                            "result briefly and naturally in your own voice, and say "
+                            "plainly if it failed or was cut off. Do not add anything "
+                            "beyond this report: " + text
+                        )
                     )
-                )
-            except Exception:
-                logger.exception("Hermes completion announcement failed")
+                    return
+                except Exception:
+                    logger.exception("Hermes completion announcement failed (attempt %s)", attempt + 1)
+                    await asyncio.sleep(1.0)
 
     hermes_notifier = _SpokenHermesNotifier()
     agent_class = (

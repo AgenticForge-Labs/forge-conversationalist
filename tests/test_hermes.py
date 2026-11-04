@@ -115,10 +115,12 @@ def test_hermes_livekit_tools_return_run_receipt_and_status() -> None:
                                   function_tool_factory=factory)
     assert set(dict(tools)) == {"delegate_to_hermes", "check_hermes_run"}
     receipt = asyncio.run(dict(tools)["delegate_to_hermes"]("Check the build"))
-    assert "accepted run run_abc" in receipt
-    assert "not necessarily complete" in receipt
-    result = asyncio.run(dict(tools)["check_hermes_run"]("run_abc"))
+    # The spoken receipt must not leak the internal run identifier.
+    assert "run_abc" not in receipt
+    assert "working on it" in receipt
+    result = asyncio.run(dict(tools)["check_hermes_run"]())
     assert "All tests passed" in result
+    assert "run_abc" not in result
 
 
 def test_invalid_or_unknown_hermes_run_is_never_reported_as_completed() -> None:
@@ -131,8 +133,8 @@ def test_invalid_or_unknown_hermes_run_is_never_reported_as_completed() -> None:
     config = Integrations(hermes=HermesConfig(url="http://localhost:8642", key="secret"))
     tools = dict(build_assistant_tools(config, hermes_client=StubClient(),
                                       function_tool_factory=factory))
-    assert "could not confirm" in asyncio.run(tools["delegate_to_hermes"]("test"))
-    assert "Do not claim" in asyncio.run(tools["check_hermes_run"]("other"))
+    assert "unavailable" in asyncio.run(tools["delegate_to_hermes"]("test"))
+    assert "cannot be verified" in asyncio.run(tools["check_hermes_run"]("other"))
 
 
 def test_completion_is_announced_without_polling_by_the_user(monkeypatch) -> None:
@@ -167,7 +169,7 @@ def test_completion_is_announced_without_polling_by_the_user(monkeypatch) -> Non
 
     async def scenario():
         reply = await delegate("compute 17*23+5")
-        assert "accepted run run_done" in reply
+        assert "run_done" not in reply and "working on it" in reply
         for _ in range(200):
             if announced:
                 return reply

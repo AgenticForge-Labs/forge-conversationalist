@@ -157,12 +157,17 @@ def build_assistant_tools(
 
         client = hermes_client or HermesRunsClient(integrations.hermes)
 
-        async def watch_run(run_id: str) -> None:
-            """Announce a terminal run once, without the user asking for status.
+        pending: list[str] = []
 
-            The agent still reads the real status before speaking, so the
-            notification carries evidence rather than a completion claim.
-            """
+        def task_with_context(task: str) -> str:
+            """Give Hermes the room's local timezone without exposing anything else."""
+            import datetime as _dt
+            now = _dt.datetime.now().astimezone()
+            stamp = now.strftime("%Y-%m-%d %H:%M %Z (UTC%z)")
+            return f"{task}\n\nRoom context: local time is {stamp}."
+
+        async def watch_run(run_id: str) -> None:
+            """Announce a terminal run once, without the user asking for status."""
             deadline = time.monotonic() + _HERMES_WATCH_TIMEOUT_S
             while time.monotonic() < deadline:
                 await asyncio.sleep(_HERMES_WATCH_INTERVAL_S)
@@ -174,50 +179,65 @@ def build_assistant_tools(
                 if status not in {"completed", "failed", "cancelled", "interrupted"}:
                     continue
                 if status == "completed":
-                    report = f"completed. Answer: {state.get('output', '')[:800]}"
+                    answer = str(state.get("output", "")).strip()
+                    if len(answer) > 400:
+                        answer = answer[:400].rstrip() + "... Ask if you want the details."
+                    report = f"completed. Answer: {answer}"
                 else:
                     report = f"ended with status {status}."
                 try:
-                    await hermes_completion_notifier(f"Hermes run {run_id} {report}")
+                    await hermes_completion_notifier(f"Hermes {report}")
                 except Exception:
                     logger.exception("Hermes completion announcement failed")
                 return
 
         async def delegate_to_hermes(task: str) -> str:
-            """Delegate one substantive task to Hermes; returns a tracked run ID, not a success claim."""
+            """Hand any task the assistant cannot do itself to Hermes."""
             try:
-                receipt = await client.submit(task)
+                receipt = await client.submit(task_with_context(task))
             except (HermesUnavailable, ValueError):
-                return "Hermes could not confirm admission. Do not retry automatically."
+                return "Hermes is unavailable right now, so that task did not start."
+            pending.append(receipt["run_id"])
             if hermes_completion_notifier is not None:
                 asyncio.create_task(watch_run(receipt["run_id"]))
             return (
-                f"Hermes accepted run {receipt['run_id']} with status {receipt['status']}. "
-                "It is not necessarily complete. The room is notified when it finishes; "
-                "use check_hermes_run if the user asks for progress."
+                "Hermes is working on it. The room will be told when the answer "
+                "is ready; there is no need to ask again."
             )
 
-        async def check_hermes_run(run_id: str) -> str:
-            """Check the actual progress or completion of a Hermes run started in this conversation."""
+        async def check_hermes_run(run_id: str = "") -> str:
+            """Check progress of a task already given to Hermes."""
+            target = run_id.strip() or (pending[-1] if pending else "")
+            if not target:
+                return "No Hermes task has been started in this conversation."
             try:
-                state = await client.status(run_id)
+                state = await client.status(target)
             except (HermesUnavailable, ValueError):
-                return "Unable to verify that Hermes run. Do not claim it succeeded."
+                return "That Hermes task cannot be verified right now."
             if state["status"] == "completed":
-                return f"Hermes completed run {run_id}: {state.get('output', '')}"
-            return f"Hermes run {run_id} has status {state['status']}. No completion is confirmed."
+                return f"Hermes finished: {state.get('output', '')}"
+            return f"Still {state['status']}. No completion is confirmed yet."
 
         tools.extend(
             [
                 function_tool_factory(
                     delegate_to_hermes,
                     name="delegate_to_hermes",
-                    description="Start an asynchronous Hermes task; return a run ID and do not claim completion.",
+                    description=(
+                        "Use this immediately for anything you cannot answer or do "
+                        "yourself: current date/time, live facts, web lookups, research, "
+                        "coding, calculations beyond trivial arithmetic. Do not ask the "
+                        "user for permission first and do not claim the answer yet; the "
+                        "room is told when it is ready."
+                    ),
                 ),
                 function_tool_factory(
                     check_hermes_run,
                     name="check_hermes_run",
-                    description="Check a Hermes task status or read the completed answer by run ID.",
+                    description=(
+                        "Only when the user asks whether the delegated task is done. "
+                        "Reports the real status of the most recent Hermes task."
+                    ),
                 ),
             ]
         )
