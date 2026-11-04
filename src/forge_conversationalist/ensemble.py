@@ -432,6 +432,20 @@ class EnsembleSession:
     async def close(self) -> None:
         if self._task is None:
             return
+        # Leave the robots resting rather than frozen on the last speaking
+        # frame: StackChan holds its mouth weight, Reachy holds its last pose.
+        if not self._closed and not self._task.done() and getattr(self, "_session", None) is not None:
+            try:
+                await asyncio.wait_for(
+                    self._request("ensemble_expression", {
+                        "expression": "neutral",
+                        "action_id": f"room-close-{uuid.uuid4().hex}",
+                        "performer_ids": list(self.config.performer_ids),
+                    }),
+                    timeout=3,
+                )
+            except (RuntimeError, ValueError, TimeoutError):
+                logger.debug("resting pose on close unavailable")
         if not self._task.done() and not self._closed:
             self._closed = True
             future = asyncio.get_running_loop().create_future()
