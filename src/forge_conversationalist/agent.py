@@ -461,12 +461,14 @@ async def entrypoint(ctx: object) -> None:
                 authorized_identity=authorized_identity,
                 room=ctx.room,
                 capabilities={
-                    "hermes": agent_integrations.hermes is not None,
+                    "hermes": getattr(agent_integrations, "hermes", None) is not None,
                     "company_services": sorted(
-                        agent_integrations.company_services.connections
-                    ) if agent_integrations.company_services else [],
-                    "mcp_tools": sorted(agent_integrations.mcp.allowed_tools)
-                    if agent_integrations.mcp else [],
+                        services.connections
+                    ) if (services := getattr(
+                        agent_integrations, "company_services", None
+                    )) else [],
+                    "mcp_tools": sorted(mcp.allowed_tools)
+                    if (mcp := getattr(agent_integrations, "mcp", None)) else [],
                 },
             )
     # A fixed greeting needs TTS only. Asking the LLM to generate it with only
