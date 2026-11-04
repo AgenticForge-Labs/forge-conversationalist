@@ -63,6 +63,8 @@ class MCPConfig:
     url: str
     token: str = field(repr=False)
     allowed_tools: tuple[str, ...]
+    transport: str = "streamable_http"
+    timeout: float = 15.0
 
     def __post_init__(self) -> None:
         _validate_url(self.url, "MCP_URL")
@@ -74,6 +76,10 @@ class MCPConfig:
             raise ValueError("MCP_ALLOWED_TOOLS contains an invalid name")
         if len(set(self.allowed_tools)) != len(self.allowed_tools):
             raise ValueError("MCP_ALLOWED_TOOLS contains duplicate names")
+        if self.transport not in {"streamable_http", "sse"}:
+            raise ValueError("MCP_TRANSPORT must be streamable_http or sse")
+        if not (1.0 <= self.timeout <= 120.0):
+            raise ValueError("MCP_TIMEOUT must be 1-120 seconds")
 
 
 @dataclass(frozen=True)
@@ -252,7 +258,13 @@ def load_integrations(env: dict[str, str] | None = None) -> Integrations:
     mcp = None
     if mcp_url:
         names = tuple(s.strip() for s in e.get("MCP_ALLOWED_TOOLS", "").split(",") if s.strip())
-        mcp = MCPConfig(url=mcp_url, token=e.get("MCP_TOKEN", ""), allowed_tools=names)
+        mcp = MCPConfig(
+            url=mcp_url,
+            token=e.get("MCP_TOKEN", ""),
+            allowed_tools=names,
+            transport=e.get("MCP_TRANSPORT", "streamable_http").strip() or "streamable_http",
+            timeout=float(e.get("MCP_TIMEOUT", "15") or 15),
+        )
     elif e.get("MCP_ALLOWED_TOOLS", "").strip() or e.get("MCP_TOKEN", "").strip():
         raise ValueError("MCP_URL must be set when MCP credentials or tools are configured")
 

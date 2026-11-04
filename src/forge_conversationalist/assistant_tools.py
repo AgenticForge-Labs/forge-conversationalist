@@ -67,9 +67,10 @@ def build_assistant_tools(
         conf = integrations.mcp
         server = mcp_module.MCPServerHTTP(
             conf.url,
-            transport_type="streamable_http",
+            transport_type=conf.transport,
             headers={"Authorization": f"Bearer {conf.token}"},
             allowed_tools=list(conf.allowed_tools),
+            timeout=conf.timeout,
         )
         tools.append(mcp_module.MCPToolset(id="approved-mcp", mcp_server=server))
 
