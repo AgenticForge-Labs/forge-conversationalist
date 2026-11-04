@@ -53,7 +53,8 @@ INSTRUCTIONS = (
     "you lack access to the time or to live information; delegate it instead. "
     "Questions are independent: if one task is still running, delegate the next "
     "question immediately rather than waiting or asking the user to come back. "
-    "Say only that Hermes is working on the topic; never read task identifiers "
+    "Acknowledge a delegated task in at most four words (for example \"On it.\"); "
+    "never read task identifiers "
     "aloud, and never claim an answer before it arrives. Each result is announced "
     "with its topic and kept for this conversation: when the user asks about one, "
     "use check_hermes_run with that topic instead of guessing or re-running it. "
@@ -609,6 +610,28 @@ def _requested_turn_pacing(metadata: str) -> str:
     return value if isinstance(value, str) and value in {"quick", "standard", "patient"} else "standard"
 
 
+def _prewarm_job(_process: object) -> None:
+    """Import latency-sensitive modules before the first turn.
+
+    Tool discovery and the realtime LLM pull in large schema packages. Doing
+    that inside the first reply stalls the event loop for a few hundred
+    milliseconds, which is audible as a late answer.
+    """
+    import importlib
+
+    for name in (
+        "mcp",
+        "mcp_types",
+        "openai",
+        "livekit.agents.mcp",
+        "livekit.plugins.openai",
+    ):
+        try:
+            importlib.import_module(name)
+        except Exception:
+            logger.debug("prewarm import skipped: %s", name, exc_info=True)
+
+
 def main() -> None:
     from dotenv import load_dotenv
     from livekit import agents
@@ -619,7 +642,7 @@ def main() -> None:
     load_integrations()
     if profile.requires_openrouter and not os.getenv("OPENROUTER_API_KEY"):
         raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
-    server = AgentServer()
+    server = AgentServer(setup_fnc=_prewarm_job)
 
     server.rtc_session(agent_name=AGENT_NAME)(entrypoint)
 
