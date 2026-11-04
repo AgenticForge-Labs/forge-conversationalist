@@ -13,9 +13,10 @@ import logging
 import os
 import re
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Mapping
+from typing import Any
 from uuid import UUID
 
 from .presentation import PresentationEvent, PresentationRouter, publish_cue
@@ -109,7 +110,7 @@ def parse_mail_notice(raw: bytes | str, *, business_id: str, now: datetime) -> M
     if not isinstance(raw_observed, str):
         return None
     try:
-        observed = datetime.fromisoformat(raw_observed.replace("Z", "+00:00"))
+        observed = datetime.fromisoformat(raw_observed)
     except ValueError:
         return None
     if observed.tzinfo is None or observed.utcoffset() is None:
