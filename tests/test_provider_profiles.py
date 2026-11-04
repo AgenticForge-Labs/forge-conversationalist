@@ -123,7 +123,7 @@ def test_openrouter_stages_use_fixed_base_and_transcription_http() -> None:
         },
     )
     assert result["vad"] == "silero"
-    assert result["turn_handling"] == {"turn_detection": "turn-detector"}
+    assert result["turn_handling"] == {"turn_detection": "turn-detector", "preemptive_generation": {"enabled": True, "preemptive_tts": True}}
     assert not sdk.inference.STT.called
     assert not sdk.inference.LLM.called
     assert not sdk.inference.TTS.called
@@ -135,7 +135,7 @@ def test_local_turn_detector_can_be_pinned_to_mini_without_changing_default() ->
     with patch.dict("os.environ", {}, clear=True):
         default_result, default_sdk, _ = _build(profile)
     default_sdk.inference.TurnDetector.assert_called_once_with()
-    assert default_result["turn_handling"] == {"turn_detection": "turn-detector"}
+    assert default_result["turn_handling"] == {"turn_detection": "turn-detector", "preemptive_generation": {"enabled": True, "preemptive_tts": True}}
 
     sdk, openai, silero = _fake_adapters()
     with (
@@ -148,6 +148,7 @@ def test_local_turn_detector_can_be_pinned_to_mini_without_changing_default() ->
     sdk.inference.TurnDetector.assert_called_once_with(version="v1-mini")
     assert result["turn_handling"] == {
         "turn_detection": "turn-detector",
+        "preemptive_generation": {"enabled": True, "preemptive_tts": True},
         "interruption": {"mode": "vad"},
     }
 

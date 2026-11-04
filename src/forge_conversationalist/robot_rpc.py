@@ -23,6 +23,7 @@ def register_robot_rpc(
     ensemble: EnsembleSession,
     authorized_identity: str,
     room: object | None = None,
+    capabilities: dict[str, object] | None = None,
     rpc_error_factory: Callable[[str], Exception] | None = None,
 ) -> None:
     """Expose read-only discovery and explicit one-robot gestures to the owner.
@@ -80,5 +81,28 @@ def register_robot_rpc(
             outcome = {**outcome, "completion": "unconfirmed"}
         return json.dumps(outcome, separators=(",", ":"), ensure_ascii=True)
 
+    async def get_capabilities(data: object) -> str:
+        check_identity(data)
+        state = await ensemble.status()
+        performers = state.get("performers") if isinstance(state, dict) else None
+        summary = {
+            "schema": "forge.capabilities.v1",
+            "integrations": capabilities or {},
+            "performers": {
+                name: {
+                    "status": detail.get("status"),
+                    "expressions": detail.get("expressions", []),
+                    "presence_behaviors": detail.get("presence_behaviors", []),
+                }
+                for name, detail in (performers or {}).items()
+                if isinstance(detail, dict)
+            },
+        }
+        response = json.dumps(summary, separators=(",", ":"), ensure_ascii=True)
+        if len(response.encode("utf-8")) > _MAX_STATUS_BYTES:
+            raise reject("Capability catalog exceeds the bounded response size")
+        return response
+
     register("forge.get_robots", get_robots)
+    register("forge.get_capabilities", get_capabilities)
     register("forge.request_robot_expression", request_robot_expression)

@@ -75,6 +75,7 @@ def build_voice_session(
     *,
     vad_sensitivity: str = "standard",
     turn_pacing: str = "standard",
+    interruption: dict[str, object] | None = None,
     tts_sample_rate: int = 24000,
     sdk: object | None = None,
     openai_plugin: object | None = None,
@@ -129,6 +130,21 @@ def build_voice_session(
     turn_handling = {
         "turn_detection": _build_turn_detector(sdk),
     }
+    # Speculative generation starts the reply before the user's turn is fully
+    # committed, so the model's think time overlaps the end of their speech.
+    # Measured LLM time-to-first-sentence is ~0.5-1.0 s, which is the amount
+    # this can hide. Operators can still disable it explicitly.
+    preemptive = os.getenv("CONVERSATIONALIST_PREEMPTIVE_GENERATION", "true").strip().lower()
+    if preemptive not in {"false", "0", "no"}:
+        # Speculative TTS additionally hides the synthesis step, at the cost of
+        # occasionally synthesizing audio that is never played.
+        preemptive_tts = os.getenv(
+            "CONVERSATIONALIST_PREEMPTIVE_TTS", "true"
+        ).strip().lower() not in {"false", "0", "no"}
+        turn_handling["preemptive_generation"] = {
+            "enabled": True,
+            "preemptive_tts": preemptive_tts,
+        }
     if turn_pacing != "standard":
         delay = 0.25 if turn_pacing == "quick" else 1.2
         turn_handling["endpointing"] = {"mode": "fixed", "min_delay": delay, "max_delay": delay}
@@ -136,6 +152,11 @@ def build_voice_session(
         # Adaptive interruption uses a separate LiveKit cloud endpoint.
         # Keep local runs fully on-device with the standard VAD strategy.
         turn_handling["interruption"] = {"mode": "vad"}
+    if interruption:
+        turn_handling["interruption"] = {
+            **turn_handling.get("interruption", {}),
+            **interruption,
+        }
 
     threshold = VAD_SENSITIVITY_THRESHOLDS[vad_sensitivity]
     vad = silero.VAD.load(
@@ -241,6 +262,7 @@ async def entrypoint(ctx: object) -> None:
         profile,
         vad_sensitivity=vad_sensitivity,
         turn_pacing=turn_pacing,
+        interruption=_requested_interruption(metadata),
         tts_sample_rate=selected_model["sampleRate"] if selected_model else _default_tts_sample_rate(profile),
     )
     install_assistant_text_hook(
@@ -410,6 +432,14 @@ async def entrypoint(ctx: object) -> None:
                 ensemble=ensemble,
                 authorized_identity=authorized_identity,
                 room=ctx.room,
+                capabilities={
+                    "hermes": agent_integrations.hermes is not None,
+                    "company_services": sorted(
+                        agent_integrations.company_services.connections
+                    ) if agent_integrations.company_services else [],
+                    "mcp_tools": sorted(agent_integrations.mcp.allowed_tools)
+                    if agent_integrations.mcp else [],
+                },
             )
     # A fixed greeting needs TTS only. Asking the LLM to generate it with only
     # system instructions fails on providers that require a user query and
@@ -599,6 +629,42 @@ def _requested_vad_sensitivity(metadata: str) -> str:
         if isinstance(sensitivity, str) and sensitivity in VAD_SENSITIVITY_THRESHOLDS
         else "standard"
     )
+
+
+def _requested_interruption(metadata: str) -> dict[str, object]:
+    """Read operator-chosen barge-in behaviour from signed job metadata.
+
+    Only bounded, allowlisted fields are accepted. A malformed request falls
+    back to the SDK defaults rather than guessing.
+    """
+    if not metadata:
+        return {}
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(request, dict):
+        return {}
+    raw = request.get("interruption")
+    if not isinstance(raw, dict):
+        return {}
+    options: dict[str, object] = {}
+    enabled = raw.get("enabled")
+    if isinstance(enabled, bool):
+        options["enabled"] = enabled
+    mode = raw.get("mode")
+    if mode in {"adaptive", "vad"}:
+        options["mode"] = mode
+    min_words = raw.get("min_words")
+    if isinstance(min_words, int) and not isinstance(min_words, bool) and 0 <= min_words <= 10:
+        options["min_words"] = min_words
+    min_duration = raw.get("min_duration")
+    if isinstance(min_duration, (int, float)) and not isinstance(min_duration, bool) and 0.0 <= float(min_duration) <= 2.0:
+        options["min_duration"] = float(min_duration)
+    resume = raw.get("resume_false_interruption")
+    if isinstance(resume, bool):
+        options["resume_false_interruption"] = resume
+    return options
 
 
 def _requested_turn_pacing(metadata: str) -> str:

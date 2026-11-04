@@ -90,6 +90,7 @@ export async function POST(request: NextRequest) {
   let requestedModel: unknown;
   let requestedVadSensitivity: unknown;
   let requestedTurnPacing: unknown;
+  let requestedInterruption: unknown;
   const rawBody = await request.text();
   if (rawBody) {
     try {
@@ -105,6 +106,9 @@ export async function POST(request: NextRequest) {
       }
       if (body && typeof body === "object" && "turnPacing" in body) {
         requestedTurnPacing = body.turnPacing;
+      }
+      if (body && typeof body === "object" && "interruption" in body) {
+        requestedInterruption = body.interruption;
       }
     } catch {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
@@ -142,6 +146,39 @@ export async function POST(request: NextRequest) {
   }
   if (requestedTurnPacing !== undefined && !TURN_PACINGS.includes(requestedTurnPacing as typeof TURN_PACINGS[number])) {
     return NextResponse.json({ error: "Unsupported turn pacing" }, { status: 400 });
+  }
+  let interruption: Record<string, boolean | number | string> | undefined;
+  if (requestedInterruption !== undefined) {
+    if (!requestedInterruption || typeof requestedInterruption !== "object" || Array.isArray(requestedInterruption)) {
+      return NextResponse.json({ error: "Invalid interruption settings" }, { status: 400 });
+    }
+    const raw = requestedInterruption as Record<string, unknown>;
+    const clean: Record<string, boolean | number | string> = {};
+    if ("enabled" in raw) {
+      if (typeof raw.enabled !== "boolean") return NextResponse.json({ error: "Invalid interruption enabled" }, { status: 400 });
+      clean.enabled = raw.enabled;
+    }
+    if ("mode" in raw) {
+      if (raw.mode !== "adaptive" && raw.mode !== "vad") return NextResponse.json({ error: "Invalid interruption mode" }, { status: 400 });
+      clean.mode = raw.mode;
+    }
+    if ("min_words" in raw) {
+      if (typeof raw.min_words !== "number" || !Number.isInteger(raw.min_words) || raw.min_words < 0 || raw.min_words > 10) {
+        return NextResponse.json({ error: "Invalid interruption min words" }, { status: 400 });
+      }
+      clean.min_words = raw.min_words;
+    }
+    if ("min_duration" in raw) {
+      if (typeof raw.min_duration !== "number" || raw.min_duration < 0 || raw.min_duration > 2) {
+        return NextResponse.json({ error: "Invalid interruption duration" }, { status: 400 });
+      }
+      clean.min_duration = raw.min_duration;
+    }
+    if ("resume_false_interruption" in raw) {
+      if (typeof raw.resume_false_interruption !== "boolean") return NextResponse.json({ error: "Invalid interruption resume" }, { status: 400 });
+      clean.resume_false_interruption = raw.resume_false_interruption;
+    }
+    interruption = clean;
   }
 
   // The signed HttpOnly cookie binds an authenticated browser to its existing
@@ -188,6 +225,7 @@ export async function POST(request: NextRequest) {
     ...(requestedVoice ? { tts_voice: requestedVoice } : {}),
     ...(requestedVadSensitivity ? { vad_sensitivity: requestedVadSensitivity } : {}),
     ...(requestedTurnPacing ? { turn_pacing: requestedTurnPacing } : {}),
+    ...(interruption ? { interruption } : {}),
     authorized_identity: sessionIdentity,
   };
   if (!resumeExistingRoom) {
