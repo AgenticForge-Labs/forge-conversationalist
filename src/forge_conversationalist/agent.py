@@ -495,7 +495,10 @@ async def entrypoint(ctx: object) -> None:
             if agent_integrations.company_services is None and agent_integrations.hermes is None:
                 logger.warning("mail notification demo disabled: no read-only summary capability")
             else:
-                notifier = AmbientMailNotifications(mail_stream_config)
+                company_events = os.getenv("CONVERSATIONALIST_COMPANY_NOTIFICATIONS", "").lower() in {
+                    "1", "true", "yes",
+                }
+                notifier = AmbientMailNotifications(mail_stream_config, allow_company=company_events)
                 notifier.start(session, ctx.room)
                 ctx.add_shutdown_callback(notifier.close)
 
@@ -512,14 +515,18 @@ def _room_instructions(
     if personality.instructions:
         base = base.replace("You are Forge Conversationalist, a helpful spoken assistant. ", "")
         base = personality.instructions + " " + base
-    if os.getenv("CONVERSATIONALIST_MAIL_STREAMS", "").lower() in {"1", "true", "yes"}:
+    if any(
+        os.getenv(name, "").lower() in {"1", "true", "yes"}
+        for name in ("CONVERSATIONALIST_MAIL_STREAMS", "CONVERSATIONALIST_COMPANY_NOTIFICATIONS")
+    ):
         base += (
-            " With operator-enabled company mail notifications, I may announce only "
-            "that new email arrived and ask if you want a summary. A yes means "
-            "read/summarize the latest mail only through currently authorized "
-            "company services or Hermes tools; never guess its contents, "
-            "identify a sender without a read, or send/modify email. "
-            "Never read private mail aloud without the user's explicit yes."
+            " With operator-enabled company event notifications, I may announce "
+            "generic new email, order and workflow/print-failure alerts and ask "
+            "whether the user wants details. A yes is authorization to request "
+            "a read-only summary only through currently granted company services "
+            "or Hermes tools; never guess, claim work succeeded, read mail "
+            "contents without an explicit yes, or send/modify email. "
+            "If no current read grant exists, say details are unavailable."
         )
     config = getattr(integrations, "puppeteer_stdio", None)
     if getattr(integrations, "ensemble", None) is not None:

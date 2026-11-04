@@ -12,6 +12,15 @@ No subject, sender, email body, or broker token reaches the room or a robot.
 An affirmative answer uses the existing read-only company services/Hermes
 tools, not an automatic mail read.
 
+The separate `CONVERSATIONALIST_COMPANY_NOTIFICATIONS=1` opt-in additionally
+recognizes exact, source-pinned `order.created`, `printer.job.failed`, and
+`work.failed` notifications with existing generic `order`/`failure`
+indicators and short nonprivate speech. Existing mail-only mode remains
+unchanged. Finance and GitHub activity do **not** trigger unsolicited speech;
+there is no implied approval to retrieve sensitive data, move robots or
+take operational action. Shopify order/work failure publishers still require
+separate source-linked rollout and provider acceptance.
+
 `pip install -e '.[mail-streams]'` or `uv run --with 'hatchet-sdk>=1.44,<2'`
 installs the optional Streams SDK; ordinary voice remains independent.
 The feature also requires `APP_ENV=development`,

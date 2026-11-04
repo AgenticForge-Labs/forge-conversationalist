@@ -15,6 +15,7 @@ from forge_conversationalist.mail_stream_notifications import (
     AmbientMailNotifications,
     MailStreamConfig,
     load_mail_stream_config,
+    parse_company_notice,
     parse_mail_notice,
 )
 
@@ -81,6 +82,34 @@ def test_parser_is_tenant_scoped_and_rejects_private_mail_data():
     assert parse_mail_notice(wire() + "x" * 10000, business_id=BUSINESS, now=datetime.now(UTC)) is None
 
 
+def test_company_mode_allows_only_fixed_nonprivate_order_failure_prompts():
+    scenarios = [
+        ("shopify", "order.created", "New Shopify order received.", "order"),
+        ("simplyprint", "printer.job.failed", "A 3D printing job reported a failure.", "failure"),
+        ("agenticforge-platform", "work.failed", "A company workflow failed.", "failure"),
+    ]
+    for system, kind, summary, expected in scenarios:
+        message = wire(source_system=system, kind=kind, summary=summary)
+        notice = parse_company_notice(message, business_id=BUSINESS, now=datetime.now(UTC))
+        assert notice is not None and notice.notification == expected
+        assert "confidential" not in notice.spoken_prompt
+        assert parse_mail_notice(message, business_id=BUSINESS, now=datetime.now(UTC)) is None
+        assert parse_company_notice(
+            wire(source_system=system, kind=kind, summary="Mail content: confidential"),
+            business_id=BUSINESS, now=datetime.now(UTC),
+        ) is None
+    assert parse_company_notice(
+        wire(source_system="mercury", kind="finance.transaction.received",
+             summary="A financial transaction was recorded."),
+        business_id=BUSINESS, now=datetime.now(UTC),
+    ) is None
+    assert parse_company_notice(
+        wire(source_system="github", kind="github.activity",
+             summary="GitHub workflow activity was recorded."),
+        business_id=BUSINESS, now=datetime.now(UTC),
+    ) is None
+
+
 def test_parser_rejects_stale_or_future_events_and_naive_clock():
     for moment in (datetime.now(UTC) - timedelta(minutes=10), datetime.now(UTC) + timedelta(minutes=3)):
         assert parse_mail_notice(wire(observed_at=moment.isoformat()), business_id=BUSINESS, now=datetime.now(UTC)) is None
@@ -118,6 +147,28 @@ def test_room_emits_only_generic_mail_visual_and_spoken_prompt():
     assert visual_payload["privacy"] == "private"
     assert visual_payload["auto_speak"] is False
     session.say.assert_awaited_once_with("You've got new mail. Would you like a summary?")
+
+
+def test_company_mode_emits_order_and_failure_cues_without_private_content():
+    session = SimpleNamespace(say=AsyncMock(), agent_state="listening", user_state="listening")
+    participant = SimpleNamespace(publish_data=AsyncMock())
+    room = SimpleNamespace(local_participant=participant)
+    cases = (
+        ("shopify", "order.created", "New Shopify order received.", "order"),
+        ("simplyprint", "printer.job.failed", "A 3D printing job reported a failure.", "failure"),
+    )
+    for system, kind, summary, expected in cases:
+        client = AmbientMailNotifications(MailStreamConfig(BUSINESS), allow_company=True)
+        asyncio.run(client.consume(
+            FakeStreams([wire(event_id="evt-" + expected, source_system=system, kind=kind, summary=summary)]),
+            session, room,
+        ))
+    assert participant.publish_data.await_count == 2
+    got = [json.loads(call.args[0]) for call in participant.publish_data.await_args_list]
+    assert [item["value"] for item in got] == ["order", "failure"]
+    assert all(item["privacy"] == "private" and not item["auto_speak"] for item in got)
+    assert session.say.await_count == 2
+    assert all("confidential" not in str(call) for call in session.say.await_args_list)
 
 
 def test_busy_room_does_not_interrupt_or_read_mail():
