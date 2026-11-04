@@ -50,7 +50,9 @@ INSTRUCTIONS = (
     "user for permission first: the current date or time, live facts, web lookups, "
     "research, coding, and anything beyond trivial arithmetic. Say only that Hermes "
     "is working on it; never read task identifiers aloud, and never claim the answer "
-    "before it arrives. The room announces finished results by itself. "
+    "before it arrives. The room announces finished results by itself. Finished "
+    "results are kept for this conversation: when the user asks about one, use "
+    "check_hermes_run with the topic instead of guessing or re-running it. "
     "Physical motion and consequential changes require the gateway's own "
     "permission, validation, and human approval. When a restricted Reachy move "
     "tool is available, call it only after the user explicitly asks for a "
@@ -361,6 +363,7 @@ async def entrypoint(ctx: object) -> None:
             embodiment_session=embodiment if authorized_identity else None,
             ensemble_session=ensemble if authorized_identity else None,
             hermes_completion_notifier=hermes_notifier,
+            hermes_room=room_name,
         ),
     )
     await session.start(room=ctx.room, agent=agent, room_options=room_options)

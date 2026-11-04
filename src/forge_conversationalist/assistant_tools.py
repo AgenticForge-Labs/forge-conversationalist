@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .ensemble import EnsembleSession
 
 from .hermes import HermesRunsClient, HermesUnavailable
+from .hermes_tasks import HermesTaskStore
 
 logger = logging.getLogger(__name__)
 _HERMES_WATCH_TIMEOUT_S = 900.0
@@ -55,6 +56,7 @@ def build_assistant_tools(
     embodiment_session: EmbodimentSession | None = None,
     ensemble_session: EnsembleSession | None = None,
     hermes_completion_notifier: Callable[[str], Awaitable[None]] | None = None,
+    hermes_room: str = "room",
 ) -> list[object]:
     """Construct tools for one room; no integrations means an empty list."""
     tools: list[object] = []
@@ -156,8 +158,7 @@ def build_assistant_tools(
             from livekit.agents import function_tool as function_tool_factory
 
         client = hermes_client or HermesRunsClient(integrations.hermes)
-
-        pending: list[str] = []
+        tasks = HermesTaskStore(room=hermes_room)
 
         def task_with_context(task: str) -> str:
             """Give Hermes the room's local timezone without exposing anything else."""
@@ -168,6 +169,9 @@ def build_assistant_tools(
 
         async def watch_run(run_id: str) -> None:
             """Announce a terminal run once, without the user asking for status."""
+            task_text = next(
+                (t.task for t in tasks.recent(20) if t.run_id == run_id), "your task",
+            )
             deadline = time.monotonic() + _HERMES_WATCH_TIMEOUT_S
             while time.monotonic() < deadline:
                 await asyncio.sleep(_HERMES_WATCH_INTERVAL_S)
@@ -178,13 +182,15 @@ def build_assistant_tools(
                 status = state.get("status")
                 if status not in {"completed", "failed", "cancelled", "interrupted"}:
                     continue
+                answer = str(state.get("output", "")).strip()
+                tasks.finish(run_id, status, answer)
                 if status == "completed":
-                    answer = str(state.get("output", "")).strip()
-                    if len(answer) > 400:
-                        answer = answer[:400].rstrip() + "... Ask if you want the details."
-                    report = f"completed. Answer: {answer}"
+                    short = answer
+                    if len(short) > 400:
+                        short = short[:400].rstrip() + "... Ask if you want the details."
+                    report = f"for \"{task_text}\" completed. Answer: {short}"
                 else:
-                    report = f"ended with status {status}."
+                    report = f"for \"{task_text}\" ended with status {status}."
                 try:
                     await hermes_completion_notifier(f"Hermes {report}")
                 except Exception:
@@ -197,7 +203,7 @@ def build_assistant_tools(
                 receipt = await client.submit(task_with_context(task))
             except (HermesUnavailable, ValueError):
                 return "Hermes is unavailable right now, so that task did not start."
-            pending.append(receipt["run_id"])
+            tasks.track(receipt["run_id"], task)
             if hermes_completion_notifier is not None:
                 asyncio.create_task(watch_run(receipt["run_id"]))
             return (
@@ -205,18 +211,21 @@ def build_assistant_tools(
                 "is ready; there is no need to ask again."
             )
 
-        async def check_hermes_run(run_id: str = "") -> str:
-            """Check progress of a task already given to Hermes."""
-            target = run_id.strip() or (pending[-1] if pending else "")
-            if not target:
+        async def check_hermes_run(topic: str = "") -> str:
+            """Answer a follow-up about a task, by topic when one is given."""
+            topic = topic.strip()
+            matches = tasks.find(topic) if topic else []
+            if not matches:
+                matches = tasks.outstanding()[:3] or tasks.recent(3)
+            if not matches:
                 return "No Hermes task has been started in this conversation."
-            try:
-                state = await client.status(target)
-            except (HermesUnavailable, ValueError):
-                return "That Hermes task cannot be verified right now."
-            if state["status"] == "completed":
-                return f"Hermes finished: {state.get('output', '')}"
-            return f"Still {state['status']}. No completion is confirmed yet."
+            lines = []
+            for item in matches:
+                if item.status == "completed":
+                    lines.append(f"Done: \"{item.task}\" -> {item.answer[:500]}")
+                else:
+                    lines.append(f"Still {item.status}: \"{item.task}\"")
+            return " | ".join(lines)
 
         tools.extend(
             [
@@ -235,8 +244,10 @@ def build_assistant_tools(
                     check_hermes_run,
                     name="check_hermes_run",
                     description=(
-                        "Only when the user asks whether the delegated task is done. "
-                        "Reports the real status of the most recent Hermes task."
+                        "Use for any follow-up about earlier Hermes work. Pass the "
+                        "topic the user asked about (for example 'time' or 'election "
+                        "results') to get that task's real status and answer. Omit the "
+                        "topic to summarize outstanding and recent tasks."
                     ),
                 ),
             ]
