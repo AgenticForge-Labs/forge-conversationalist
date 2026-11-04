@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import replace
 from typing import Any
 
@@ -323,36 +324,37 @@ async def entrypoint(ctx: object) -> None:
 
         def __init__(self) -> None:
             self.session = None
+            self._lock = asyncio.Lock()
 
         async def __call__(self, text: str) -> None:
-            session = self.session
-            if session is None:
-                return
-            # Announce at a natural pause: speaking over the user or over the
-            # agent's own turn is what made earlier results inaudible.
-            for attempt in range(12):
-                state = getattr(session, "agent_state", "idle")
-                if state in {"idle", "listening"}:
-                    break
-                await asyncio.sleep(0.5)
-            else:
-                logger.warning("Hermes announcement deferred: room stayed busy")
-                return
-            for attempt in range(3):
-                try:
-                    logger.info("announcing finished Hermes task")
-                    await session.generate_reply(
-                        instructions=(
-                            "A delegated Hermes task has finished. Tell the user the "
-                            "result briefly and naturally in your own voice, and say "
-                            "plainly if it failed or was cut off. Do not add anything "
-                            "beyond this report: " + text
-                        )
-                    )
+            # Results must not be dropped just because the room was mid-turn.
+            # Wait far longer for a pause, and deliver one result at a time.
+            async with self._lock:
+                session = self.session
+                if session is None:
                     return
-                except Exception:
-                    logger.exception("Hermes completion announcement failed (attempt %s)", attempt + 1)
-                    await asyncio.sleep(1.0)
+                deadline = time.monotonic() + 300.0
+                while time.monotonic() < deadline:
+                    if getattr(session, "agent_state", "idle") in {"idle", "listening"}:
+                        break
+                    await asyncio.sleep(0.5)
+                else:
+                    logger.warning("Hermes announcement forced after a long busy room")
+                for attempt in range(3):
+                    try:
+                        logger.info("announcing finished Hermes task")
+                        await session.generate_reply(
+                            instructions=(
+                                "A delegated Hermes task has finished. Tell the user the "
+                                "result briefly and naturally in your own voice, and say "
+                                "plainly if it failed or was cut off. Do not add anything "
+                                "beyond this report: " + text
+                            )
+                        )
+                        return
+                    except Exception:
+                        logger.exception("Hermes completion announcement failed (attempt %s)", attempt + 1)
+                        await asyncio.sleep(1.0)
 
     hermes_notifier = _SpokenHermesNotifier()
     agent_class = (
