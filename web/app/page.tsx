@@ -591,7 +591,7 @@ export default function Home() {
   const [speechEditRevision, setSpeechEditRevision] = useState(0);
   const [vadSensitivity, setVadSensitivity] = useState("standard");
   const [turnPacing, setTurnPacing] = useState("standard");
-  const [bargeIn, setBargeIn] = useState("standard");
+  const [bargeIn, setBargeIn] = useState("hard");
   const [resumeFalseInterruption, setResumeFalseInterruption] = useState(true);
   const [microphoneMode, setMicrophoneMode] = useState<MicrophoneMode>("press-to-talk");
   const [microphoneModeReady, setMicrophoneModeReady] = useState(false);

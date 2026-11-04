@@ -689,8 +689,8 @@ def _requested_vad_sensitivity(metadata: str) -> str:
 
 _BARGE_IN_PRESETS = {
     "off": {"enabled": False},
-    "hard": {"enabled": True, "min_words": 2, "min_duration": 0.4},
-    "standard": {"enabled": True, "min_words": 1, "min_duration": 0.25},
+    "hard": {"enabled": True, "min_words": 3, "min_duration": 0.6},
+    "standard": {"enabled": True, "min_words": 1, "min_duration": 0.3},
     "easy": {"enabled": True, "min_words": 0, "min_duration": 0.1},
 }
 
@@ -734,8 +734,8 @@ def _requested_interruption(metadata: str) -> dict[str, object]:
 
 
 def _default_interruption() -> dict[str, object]:
-    preset = os.getenv("CONVERSATIONALIST_BARGE_IN", "standard").strip().lower()
-    options: dict[str, object] = dict(_BARGE_IN_PRESETS.get(preset, _BARGE_IN_PRESETS["standard"]))
+    preset = os.getenv("CONVERSATIONALIST_BARGE_IN", "hard").strip().lower()
+    options: dict[str, object] = dict(_BARGE_IN_PRESETS.get(preset, _BARGE_IN_PRESETS["hard"]))
     # Never resume a sentence that was cut off by a false interruption.
     options.setdefault("resume_false_interruption", False)
     return options
