@@ -27,6 +27,10 @@ _RESTRICTED_REACHY_TOOLS = {
 _CONVERSATION_REACHY_TOOLS = frozenset({
     "play_move", "list_assets", "action_lookup", "device_stop"
 })
+_COMPANY_SERVICE_TOOLS = frozenset({
+    "service_connections_list", "service_connection_read"
+})
+_COMPANY_ENVIRONMENTS = frozenset({"development", "test", "staging", "production"})
 
 
 def _enabled(value: str, name: str) -> bool:
@@ -70,6 +74,64 @@ class MCPConfig:
             raise ValueError("MCP_ALLOWED_TOOLS contains an invalid name")
         if len(set(self.allowed_tools)) != len(self.allowed_tools):
             raise ValueError("MCP_ALLOWED_TOOLS contains duplicate names")
+
+
+@dataclass(frozen=True)
+class CompanyServicesStdioConfig:
+    """Read-only Platform company services (Zoho mail, calendar, ...).
+
+    The child enforces its own grants from the private platform env file; this
+    worker only passes the connection allowlist and a fixed read-only tool
+    allowlist. No credential ever enters the voice worker's environment.
+    """
+
+    command: str
+    config_path: Path
+    env_file: Path
+    environment: str
+    connections: tuple[str, ...]
+    content_connections: tuple[str, ...] = ()
+    allowed_tools: tuple[str, ...] = ()
+    max_records: int = 50
+
+    def __post_init__(self) -> None:
+        executable = Path(self.command)
+        if not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK):
+            raise ValueError(
+                "COMPANY_SERVICES_MCP_COMMAND must be an absolute executable path"
+            )
+        for label, path in (
+            ("COMPANY_SERVICES_MCP_CONFIG", self.config_path),
+            ("COMPANY_SERVICES_MCP_ENV_FILE", self.env_file),
+        ):
+            if not path.is_absolute() or not path.is_file():
+                raise ValueError(f"{label} must point to an existing absolute file")
+        if self.environment not in _COMPANY_ENVIRONMENTS:
+            raise ValueError("COMPANY_SERVICES_MCP_ENVIRONMENT is invalid")
+        if not self.connections or len(set(self.connections)) != len(self.connections):
+            raise ValueError("COMPANY_SERVICES_MCP_CONNECTIONS must be a unique non-empty list")
+        if not set(self.content_connections) <= set(self.connections):
+            raise ValueError("content connections must be a subset of granted connections")
+        if set(self.allowed_tools) != _COMPANY_SERVICE_TOOLS:
+            raise ValueError(
+                "COMPANY_SERVICES_MCP_ALLOWED_TOOLS must grant exactly the read-only "
+                "service tools"
+            )
+        if not 1 <= self.max_records <= 100:
+            raise ValueError("COMPANY_SERVICES_MCP_MAX_RECORDS must be 1-100")
+
+    def args(self) -> list[str]:
+        args = [
+            "--config", str(self.config_path),
+            "--env-file", str(self.env_file),
+            "--environment", self.environment,
+            "--max-records", str(self.max_records),
+        ]
+        for key in self.connections:
+            args.extend(["--allow-connection", key])
+        for key in self.content_connections:
+            args.extend(["--allow-content-connection", key])
+        return args
 
 
 @dataclass(frozen=True)
@@ -177,6 +239,7 @@ class HermesConfig:
 @dataclass(frozen=True)
 class Integrations:
     mcp: MCPConfig | None = None
+    company_services: CompanyServicesStdioConfig | None = None
     puppeteer_stdio: PuppeteerStdioConfig | None = None
     embodiment: EmbodimentConfig | None = None
     ensemble: PuppeteerEnsembleConfig | None = None
@@ -243,5 +306,28 @@ def load_integrations(env: dict[str, str] | None = None) -> Integrations:
             url=e.get("HERMES_API_URL", "http://127.0.0.1:8642").strip(),
             key=e.get("HERMES_API_KEY", ""),
         )
-    return Integrations(mcp=mcp, puppeteer_stdio=puppeteer_stdio,
+    company_services = None
+    services_config = e.get("COMPANY_SERVICES_MCP_CONFIG", "").strip()
+    if services_config:
+        company_services = CompanyServicesStdioConfig(
+            command=e.get("COMPANY_SERVICES_MCP_COMMAND", "").strip(),
+            config_path=Path(services_config),
+            env_file=Path(e.get("COMPANY_SERVICES_MCP_ENV_FILE", "").strip()),
+            environment=e.get("COMPANY_SERVICES_MCP_ENVIRONMENT", "production").strip(),
+            connections=tuple(
+                item.strip() for item in e.get("COMPANY_SERVICES_MCP_CONNECTIONS", "").split(",")
+                if item.strip()
+            ),
+            content_connections=tuple(
+                item.strip() for item in e.get("COMPANY_SERVICES_MCP_CONTENT_CONNECTIONS", "").split(",")
+                if item.strip()
+            ),
+            allowed_tools=tuple(
+                item.strip() for item in e.get("COMPANY_SERVICES_MCP_ALLOWED_TOOLS", "").split(",")
+                if item.strip()
+            ),
+            max_records=int(e.get("COMPANY_SERVICES_MCP_MAX_RECORDS", "50") or 50),
+        )
+    return Integrations(mcp=mcp, company_services=company_services,
+                        puppeteer_stdio=puppeteer_stdio,
                         embodiment=embodiment, ensemble=ensemble, hermes=hermes)

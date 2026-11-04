@@ -73,6 +73,19 @@ def build_assistant_tools(
         )
         tools.append(mcp_module.MCPToolset(id="approved-mcp", mcp_server=server))
 
+    if integrations.company_services is not None:
+        if mcp_module is None:
+            from livekit.agents import mcp as mcp_module
+        conf = integrations.company_services
+        # Read-only Platform company services. The child reads its own private
+        # env file, so the worker forwards no provider credentials.
+        server = mcp_module.MCPServerStdio(
+            command=conf.command,
+            args=conf.args(),
+            env={},
+        )
+        tools.append(_restricted_mcp_toolset(mcp_module, server, conf.allowed_tools))
+
     if integrations.puppeteer_stdio is not None:
         if mcp_module is None:
             from livekit.agents import mcp as mcp_module
