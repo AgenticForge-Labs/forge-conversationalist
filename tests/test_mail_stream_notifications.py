@@ -103,14 +103,13 @@ class FakeStreams:
             yield SimpleNamespace(payload=text, cursor="new-event")
 
 
-@pytest.mark.asyncio
-async def test_room_emits_only_generic_mail_visual_and_spoken_prompt():
+def test_room_emits_only_generic_mail_visual_and_spoken_prompt():
     client = AmbientMailNotifications(MailStreamConfig(BUSINESS))
     streams = FakeStreams([wire(), wire(), wire(event_id="evt-43")])
     participant = SimpleNamespace(publish_data=AsyncMock())
     room = SimpleNamespace(local_participant=participant)
     session = SimpleNamespace(say=AsyncMock(), agent_state="listening", user_state="listening")
-    await client.consume(streams, session, room)
+    asyncio.run(client.consume(streams, session, room))
     assert streams.calls[1][-1] == "existing-latest"
     assert participant.publish_data.await_count == 2
     visual_payload = json.loads(participant.publish_data.await_args_list[0].args[0])
@@ -121,17 +120,19 @@ async def test_room_emits_only_generic_mail_visual_and_spoken_prompt():
     session.say.assert_awaited_once_with("You've got new mail. Would you like a summary?")
 
 
-@pytest.mark.asyncio
-async def test_busy_room_does_not_interrupt_or_read_mail():
+def test_busy_room_does_not_interrupt_or_read_mail():
     client = AmbientMailNotifications(MailStreamConfig(BUSINESS))
     streams = FakeStreams([wire()])
     participant = SimpleNamespace(publish_data=AsyncMock())
     room = SimpleNamespace(local_participant=participant)
     session = SimpleNamespace(say=AsyncMock(), agent_state="speaking", user_state="speaking")
     # The UI notification may be published, but speech waits while busy.
-    task = asyncio.create_task(client.consume(streams, session, room))
-    await asyncio.sleep(0)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    async def exercise() -> None:
+        task = asyncio.create_task(client.consume(streams, session, room))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
     session.say.assert_not_called()
