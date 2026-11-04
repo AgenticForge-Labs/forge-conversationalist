@@ -16,7 +16,7 @@ from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from .presentation import PresentationEvent, PresentationRouter, publish_cue
@@ -25,6 +25,18 @@ logger = logging.getLogger(__name__)
 _ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$")
 SUMMARY = "New email received. Would you like a summary?"
 SPOKEN_PROMPT = "You've got new mail. Would you like a summary?"
+COMPANY_PROMPTS: dict[tuple[str, str, str], tuple[Literal["mail", "order", "failure"], str]] = {
+    ("zoho-mail", "mail.received", SUMMARY): ("mail", SPOKEN_PROMPT),
+    ("shopify", "order.created", "New Shopify order received."): (
+        "order", "A new order was received. Would you like details?",
+    ),
+    ("simplyprint", "printer.job.failed", "A 3D printing job reported a failure."): (
+        "failure", "A print job failed. Would you like details?",
+    ),
+    ("agenticforge-platform", "work.failed", "A company workflow failed."): (
+        "failure", "A company workflow needs attention. Would you like details?",
+    ),
+}
 MAX_WIRE_BYTES = 4096
 MAX_AGE = timedelta(minutes=2)
 SPEAK_COOLDOWN_S = 45.0
@@ -50,11 +62,16 @@ class MailStreamConfig:
 
 def load_mail_stream_config(environ: Mapping[str, str] | None = None) -> MailStreamConfig | None:
     env = os.environ if environ is None else environ
-    enabled = env.get("CONVERSATIONALIST_MAIL_STREAMS", "").strip().lower()
-    if enabled in {"", "0", "false", "no"}:
+    mail_enabled = env.get("CONVERSATIONALIST_MAIL_STREAMS", "").strip().lower()
+    company_enabled = env.get("CONVERSATIONALIST_COMPANY_NOTIFICATIONS", "").strip().lower()
+    for name, flag in (
+        ("CONVERSATIONALIST_MAIL_STREAMS", mail_enabled),
+        ("CONVERSATIONALIST_COMPANY_NOTIFICATIONS", company_enabled),
+    ):
+        if flag not in {"", "0", "false", "no", "1", "true", "yes"}:
+            raise ValueError(f"{name} must be a boolean")
+    if mail_enabled not in {"1", "true", "yes"} and company_enabled not in {"1", "true", "yes"}:
         return None
-    if enabled not in {"1", "true", "yes"}:
-        raise ValueError("CONVERSATIONALIST_MAIL_STREAMS must be a boolean")
     if env.get("APP_ENV") != "development" or not env.get("HATCHET_CLIENT_TOKEN"):
         raise ValueError("mail Streams is only supported with an isolated development Hatchet token")
     return MailStreamConfig(business_id=env.get("CONVERSATIONALIST_MAIL_STREAM_BUSINESS_ID", ""))
@@ -64,9 +81,11 @@ def load_mail_stream_config(environ: Mapping[str, str] | None = None) -> MailStr
 class MailNotice:
     event_id: str
     observed_at: datetime
+    notification: Literal["mail", "order", "failure"] = "mail"
+    spoken_prompt: str = SPOKEN_PROMPT
 
 
-def parse_mail_notice(raw: bytes | str, *, business_id: str, now: datetime) -> MailNotice | None:
+def parse_company_notice(raw: bytes | str, *, business_id: str, now: datetime) -> MailNotice | None:
     """Reject mismatched, old or malformed notices without logging private source data."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("mail notice clock must be timezone-aware")
@@ -86,14 +105,15 @@ def parse_mail_notice(raw: bytes | str, *, business_id: str, now: datetime) -> M
     }
     if set(payload).difference(safe_keys):
         return None
+    rule = COMPANY_PROMPTS.get((
+        payload.get("source_system"), payload.get("kind"), payload.get("summary"),
+    ))
     if (
         payload.get("schema_version") != "agenticforge.event.v1"
         or payload.get("business_id") != business_id
-        or payload.get("source_system") != "zoho-mail"
-        or payload.get("kind") != "mail.received"
+        or rule is None
         or payload.get("source_record_collection") != "af_events"
         or payload.get("sensitivity") != "internal"
-        or payload.get("summary") != SUMMARY
         or payload.get("robot_id") is not None
         or payload.get("robot_status") is not None
     ):
@@ -118,7 +138,16 @@ def parse_mail_notice(raw: bytes | str, *, business_id: str, now: datetime) -> M
     age = now.astimezone(UTC) - observed.astimezone(UTC)
     if age < -timedelta(seconds=15) or age > MAX_AGE:
         return None
-    return MailNotice(event_id=event_id, observed_at=observed)
+    return MailNotice(
+        event_id=event_id, observed_at=observed,
+        notification=rule[0], spoken_prompt=rule[1],
+    )
+
+
+def parse_mail_notice(raw: bytes | str, *, business_id: str, now: datetime) -> MailNotice | None:
+    """Preserve the old mail-only contract for existing opted-in rooms."""
+    notice = parse_company_notice(raw, business_id=business_id, now=now)
+    return notice if notice is not None and notice.notification == "mail" else None
 
 
 class AmbientMailNotifications:
@@ -130,8 +159,9 @@ class AmbientMailNotifications:
     per-subscriber checkpoint and authorization proxy for production.
     """
 
-    def __init__(self, config: MailStreamConfig) -> None:
+    def __init__(self, config: MailStreamConfig, *, allow_company: bool = False) -> None:
         self.config = config
+        self.allow_company = allow_company
         self._recent = deque(maxlen=256)
         self._recent_set: set[str] = set()
         self._last_spoken = -10_000_000.0
@@ -182,7 +212,8 @@ class AmbientMailNotifications:
             if getattr(value, "name", None) != "NOT_FOUND":
                 raise
         async for record in streams.subscribe(self.config.topic, namespace=NAMESPACE, cursor=cursor):
-            notice = parse_mail_notice(
+            parser = parse_company_notice if self.allow_company else parse_mail_notice
+            notice = parser(
                 record.payload, business_id=self.config.business_id,
                 now=datetime.now(UTC),
             )
@@ -199,7 +230,8 @@ class AmbientMailNotifications:
 
     async def _notify(self, notice: MailNotice, session: Any, room: Any) -> None:
         cue = self._presentation.accept(PresentationEvent(
-            event_id=notice.event_id, category="notification", value="mail", privacy="private",
+            event_id=notice.event_id, category="notification",
+            value=notice.notification, privacy="private",
         ))
         if cue is not None:
             try:
@@ -223,6 +255,6 @@ class AmbientMailNotifications:
         # Conversationalist's existing authorized tools answer an explicit yes.
         self._last_spoken = loop.time()
         try:
-            await session.say(SPOKEN_PROMPT)
+            await session.say(notice.spoken_prompt)
         except Exception:
             logger.exception("generic mail question TTS unavailable; no automatic retry")

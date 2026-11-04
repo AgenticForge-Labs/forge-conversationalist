@@ -53,6 +53,12 @@ PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 i
   LiveKit room packet as evidence of an actual company event.
 - Never automatically speak private notification content; browser
   notification examples must be clearly labeled manual previews.
+- Optional `CONVERSATIONALIST_COMPANY_NOTIFICATIONS=1` extends the same
+  verified tenant-scoped development topic to exact, generic order and
+  printer/work failure cues. It does not speak finance or GitHub activity,
+  invent order confirmations, or authorize robot motion. It uses existing
+  `mail/order/failure` renderer values only; the mail-only feature remains
+  backward compatible.
 - Optional `CONVERSATIONALIST_MAIL_STREAMS=1` is a **development-only**
   server-side Hatchet subscriber for source-linked `mail.received` Platform
   notices. Only signed rooms with a pinned business and existing mail-read
