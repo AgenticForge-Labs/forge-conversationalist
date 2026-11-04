@@ -1,5 +1,35 @@
 # Forge Conversationalist
 
+## Development mail notifications through Hatchet Streams
+
+The experimental `CONVERSATIONALIST_MAIL_STREAMS=1` feature runs **only** in
+an authorized LiveKit room with an isolated development Hatchet token and
+the matching `CONVERSATIONALIST_MAIL_STREAM_BUSINESS_ID`. The worker
+subscribes to Platform `agenticforge.event.v1` `mail.received` events
+and emits a private `forge.presentation.v1` mail indicator and the
+**fixed generic question** “You've got new mail. Would you like a summary?”
+No subject, sender, email body, or broker token reaches the room or a robot.
+An affirmative answer uses the existing read-only company services/Hermes
+tools, not an automatic mail read.
+
+`pip install -e '.[mail-streams]'` or `uv run --with 'hatchet-sdk>=1.44,<2'`
+installs the optional Streams SDK; ordinary voice remains independent.
+The feature also requires `APP_ENV=development`,
+`HATCHET_CLIENT_TOKEN`, a signed room participant and an existing
+company mail-read tool. It is **disabled by default**. It does not
+automatically authorize Reachy motion or change the audio route; when Reachy
+is the selected speaker it can voice the generic prompt using the existing
+LiveKit output. A room starting mid-day deliberately skips historical
+notices. Production replay/authorization still requires Platform's future
+server-side subscriber API and durable cursor store.
+
+To produce notices, run the explicitly selected read-only Zoho inbox watcher
+from the Platform runbook `docs/live-mail-streams.md` against the **same**
+shared development Hatchet engine. This integration has not received attended
+live service or hardware acceptance.
+
+
+
 A hardware-independent voice conversation app for AgenticForge Labs,
 built on LiveKit Agents. **Conversation needs no robot or local LLM.**
 

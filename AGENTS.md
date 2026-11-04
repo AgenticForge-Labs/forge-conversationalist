@@ -53,6 +53,15 @@ PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 i
   LiveKit room packet as evidence of an actual company event.
 - Never automatically speak private notification content; browser
   notification examples must be clearly labeled manual previews.
+- Optional `CONVERSATIONALIST_MAIL_STREAMS=1` is a **development-only**
+  server-side Hatchet subscriber for source-linked `mail.received` Platform
+  notices. Only signed rooms with a pinned business and existing mail-read
+  tools may start it. It speaks a constant nonprivate question and delivers a
+  private generic UI indicator; never sender/subject/body and no automatic
+  email reading. The worker holds isolated development Hatchet credentials,
+  not the browser/LLM/robot. This is an explicitly restricted trial, not a
+  production subscriber authorization replacement. Do not change Puppeteer
+  motion, safety or room-presence ownership to implement notifications.
 
 
 ## Optional two-robot Reachy + StackChan deployment
