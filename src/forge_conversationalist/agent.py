@@ -687,14 +687,25 @@ def _requested_vad_sensitivity(metadata: str) -> str:
     )
 
 
+_BARGE_IN_PRESETS = {
+    "off": {"enabled": False},
+    "hard": {"enabled": True, "min_words": 2, "min_duration": 0.4},
+    "standard": {"enabled": True, "min_words": 1, "min_duration": 0.25},
+    "easy": {"enabled": True, "min_words": 0, "min_duration": 0.1},
+}
+
+
 def _requested_interruption(metadata: str) -> dict[str, object]:
     """Read operator-chosen barge-in behaviour from signed job metadata.
 
     Only bounded, allowlisted fields are accepted. A malformed request falls
-    back to the SDK defaults rather than guessing.
+    back to the configured default rather than guessing. The default keeps
+    barge-in but never restarts an interrupted sentence: resuming is what made
+    the greeting stutter and repeat when the microphone picked up the speakers.
     """
+    options = _default_interruption()
     if not metadata:
-        return {}
+        return options
     try:
         request = json.loads(metadata)
     except (TypeError, json.JSONDecodeError):
@@ -703,8 +714,7 @@ def _requested_interruption(metadata: str) -> dict[str, object]:
         return {}
     raw = request.get("interruption")
     if not isinstance(raw, dict):
-        return {}
-    options: dict[str, object] = {}
+        return options
     enabled = raw.get("enabled")
     if isinstance(enabled, bool):
         options["enabled"] = enabled
@@ -720,6 +730,14 @@ def _requested_interruption(metadata: str) -> dict[str, object]:
     resume = raw.get("resume_false_interruption")
     if isinstance(resume, bool):
         options["resume_false_interruption"] = resume
+    return options
+
+
+def _default_interruption() -> dict[str, object]:
+    preset = os.getenv("CONVERSATIONALIST_BARGE_IN", "standard").strip().lower()
+    options: dict[str, object] = dict(_BARGE_IN_PRESETS.get(preset, _BARGE_IN_PRESETS["standard"]))
+    # Never resume a sentence that was cut off by a false interruption.
+    options.setdefault("resume_false_interruption", False)
     return options
 
 
