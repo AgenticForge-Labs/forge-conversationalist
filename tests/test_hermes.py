@@ -102,7 +102,8 @@ def test_input_is_bounded(bad: str) -> None:
         asyncio.run(client.submit(bad))
 
 
-def test_hermes_livekit_tools_return_run_receipt_and_status() -> None:
+def test_hermes_livekit_tools_return_run_receipt_and_status(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CONVERSATIONALIST_HERMES_STORE", str(tmp_path / "tasks.sqlite3"))
     class StubClient:
         async def submit(self, task):
             return {"run_id": "run_abc", "status": "started"}
@@ -115,13 +116,17 @@ def test_hermes_livekit_tools_return_run_receipt_and_status() -> None:
                                   function_tool_factory=factory)
     assert set(dict(tools)) == {"delegate_to_hermes", "check_hermes_run"}
     receipt = asyncio.run(dict(tools)["delegate_to_hermes"]("Check the build"))
-    assert "accepted run run_abc" in receipt
-    assert "not necessarily complete" in receipt
-    result = asyncio.run(dict(tools)["check_hermes_run"]("run_abc"))
-    assert "All tests passed" in result
+    # The spoken receipt must not leak the internal run identifier.
+    assert "run_abc" not in receipt
+    assert "now working on" in receipt and "independently" in receipt
+    result = asyncio.run(dict(tools)["check_hermes_run"]("build"))
+    # The task is remembered by topic even before it finishes.
+    assert "Check the build" in result
+    assert "run_abc" not in result
 
 
-def test_invalid_or_unknown_hermes_run_is_never_reported_as_completed() -> None:
+def test_invalid_or_unknown_hermes_run_is_never_reported_as_completed(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CONVERSATIONALIST_HERMES_STORE", str(tmp_path / "tasks.sqlite3"))
     class StubClient:
         async def submit(self, task):
             raise HermesUnavailable("no")
@@ -131,5 +136,64 @@ def test_invalid_or_unknown_hermes_run_is_never_reported_as_completed() -> None:
     config = Integrations(hermes=HermesConfig(url="http://localhost:8642", key="secret"))
     tools = dict(build_assistant_tools(config, hermes_client=StubClient(),
                                       function_tool_factory=factory))
-    assert "could not confirm" in asyncio.run(tools["delegate_to_hermes"]("test"))
-    assert "Do not claim" in asyncio.run(tools["check_hermes_run"]("other"))
+    assert "unavailable" in asyncio.run(tools["delegate_to_hermes"]("test"))
+    assert "No Hermes task" in asyncio.run(tools["check_hermes_run"]("other"))
+
+
+def test_completion_is_announced_without_polling_by_the_user(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CONVERSATIONALIST_HERMES_STORE", str(tmp_path / "tasks.sqlite3"))
+    """A finished run reaches the room as speech, not a silent receipt."""
+    import forge_conversationalist.assistant_tools as tools_module
+
+    monkeypatch.setattr(tools_module, "_HERMES_WATCH_INTERVAL_S", 0.01)
+    monkeypatch.setattr(tools_module, "_HERMES_WATCH_TIMEOUT_S", 2.0)
+
+    class Client:
+        async def submit(self, task):
+            return {"run_id": "run_done", "status": "started"}
+
+        async def status(self, run_id):
+            return {"run_id": run_id, "status": "completed", "output": "396"}
+
+    announced: list[str] = []
+
+    async def notifier(text: str) -> None:
+        announced.append(text)
+
+    def factory(function, *, name, description):
+        return function
+
+    built = build_assistant_tools(
+        Integrations(hermes=HermesConfig(url="http://127.0.0.1:8642", key="k")),
+        hermes_client=Client(),
+        function_tool_factory=factory,
+        hermes_completion_notifier=notifier,
+    )
+    delegate = next(t for t in built if t.__name__ == "delegate_to_hermes")
+
+    async def scenario():
+        reply = await delegate("compute 17*23+5")
+        assert "run_done" not in reply and "now working on" in reply
+        for _ in range(200):
+            if announced:
+                return reply
+            await asyncio.sleep(0.01)
+        raise AssertionError("completion was never announced")
+
+    asyncio.run(scenario())
+    assert "completed" in announced[0] and "396" in announced[0]
+
+
+def test_task_store_remembers_results_by_topic(tmp_path) -> None:
+    from forge_conversationalist.hermes_tasks import HermesTaskStore
+
+    store = HermesTaskStore(tmp_path / "tasks.sqlite3", room="room-a")
+    store.track("run_1", "what time is it")
+    store.track("run_2", "look up the us election results")
+    store.finish("run_1", "completed", "7:56 PM EST")
+    assert [t.run_id for t in store.find("time")] == ["run_1"]
+    assert store.find("time")[0].answer == "7:56 PM EST"
+    assert [t.run_id for t in store.outstanding()] == ["run_2"]
+    # Another room never sees this conversation's tasks.
+    other = HermesTaskStore(tmp_path / "tasks.sqlite3", room="room-b")
+    assert other.recent() == []

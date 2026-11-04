@@ -59,6 +59,7 @@ class HermesRunsClient:
         self._runs.add(run_id)
         return {"run_id": run_id, "status": str(body.get("status", "started"))}
 
+
     async def status(self, run_id: str) -> dict[str, str]:
         """Read only runs this voice session itself submitted."""
         if run_id not in self._runs:

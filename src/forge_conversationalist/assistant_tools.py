@@ -7,7 +7,11 @@ each tool call and enforce its own grants.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,6 +19,11 @@ if TYPE_CHECKING:
     from .ensemble import EnsembleSession
 
 from .hermes import HermesRunsClient, HermesUnavailable
+from .hermes_tasks import HermesTaskStore
+
+logger = logging.getLogger(__name__)
+_HERMES_WATCH_TIMEOUT_S = 900.0
+_HERMES_WATCH_INTERVAL_S = 2.5
 from .integrations import Integrations
 
 
@@ -46,6 +55,8 @@ def build_assistant_tools(
     function_tool_factory: object | None = None,
     embodiment_session: EmbodimentSession | None = None,
     ensemble_session: EnsembleSession | None = None,
+    hermes_completion_notifier: Callable[[str], Awaitable[None]] | None = None,
+    hermes_room: str = "room",
 ) -> list[object]:
     """Construct tools for one room; no integrations means an empty list."""
     tools: list[object] = []
@@ -61,6 +72,19 @@ def build_assistant_tools(
             allowed_tools=list(conf.allowed_tools),
         )
         tools.append(mcp_module.MCPToolset(id="approved-mcp", mcp_server=server))
+
+    if integrations.company_services is not None:
+        if mcp_module is None:
+            from livekit.agents import mcp as mcp_module
+        conf = integrations.company_services
+        # Read-only Platform company services. The child reads its own private
+        # env file, so the worker forwards no provider credentials.
+        server = mcp_module.MCPServerStdio(
+            command=conf.command,
+            args=conf.args(),
+            env={},
+        )
+        tools.append(_restricted_mcp_toolset(mcp_module, server, conf.allowed_tools))
 
     if integrations.puppeteer_stdio is not None:
         if mcp_module is None:
@@ -147,39 +171,104 @@ def build_assistant_tools(
             from livekit.agents import function_tool as function_tool_factory
 
         client = hermes_client or HermesRunsClient(integrations.hermes)
+        tasks = HermesTaskStore(room=hermes_room)
+
+        def task_with_context(task: str) -> str:
+            """Give Hermes the room's local timezone without exposing anything else."""
+            import datetime as _dt
+            now = _dt.datetime.now().astimezone()
+            stamp = now.strftime("%Y-%m-%d %H:%M %Z (UTC%z)")
+            return f"{task}\n\nRoom context: local time is {stamp}."
+
+        async def watch_run(run_id: str) -> None:
+            """Announce a terminal run once, without the user asking for status."""
+            task_text = next(
+                (t.task for t in tasks.recent(20) if t.run_id == run_id), "your task",
+            )
+            deadline = time.monotonic() + _HERMES_WATCH_TIMEOUT_S
+            while time.monotonic() < deadline:
+                await asyncio.sleep(_HERMES_WATCH_INTERVAL_S)
+                try:
+                    state = await client.status(run_id)
+                except (HermesUnavailable, ValueError):
+                    continue
+                status = state.get("status")
+                if status not in {"completed", "failed", "cancelled", "interrupted"}:
+                    continue
+                answer = str(state.get("output", "")).strip()
+                tasks.finish(run_id, status, answer)
+                if status == "completed":
+                    short = answer
+                    if len(short) > 400:
+                        short = short[:400].rstrip() + "... Ask if you want the details."
+                    report = f"for \"{task_text}\" completed. Answer: {short}"
+                else:
+                    report = f"for \"{task_text}\" ended with status {status}."
+                try:
+                    await hermes_completion_notifier(f"Hermes {report}")
+                except Exception:
+                    logger.exception("Hermes completion announcement failed")
+                return
 
         async def delegate_to_hermes(task: str) -> str:
-            """Delegate one substantive task to Hermes; returns a tracked run ID, not a success claim."""
+            """Hand any task the assistant cannot do itself to Hermes."""
             try:
-                receipt = await client.submit(task)
+                receipt = await client.submit(task_with_context(task))
             except (HermesUnavailable, ValueError):
-                return "Hermes could not confirm admission. Do not retry automatically."
+                return "Hermes is unavailable right now, so that task did not start."
+            tasks.track(receipt["run_id"], task)
+            if hermes_completion_notifier is not None:
+                asyncio.create_task(watch_run(receipt["run_id"]))
             return (
-                f"Hermes accepted run {receipt['run_id']} with status {receipt['status']}. "
-                "It is not necessarily complete. Use check_hermes_run to get the result."
+                f"Hermes is now working on \"{task[:120]}\". Tasks run "
+                "independently, so keep asking new questions; each answer is "
+                "announced when it arrives."
             )
 
-        async def check_hermes_run(run_id: str) -> str:
-            """Check the actual progress or completion of a Hermes run started in this conversation."""
-            try:
-                state = await client.status(run_id)
-            except (HermesUnavailable, ValueError):
-                return "Unable to verify that Hermes run. Do not claim it succeeded."
-            if state["status"] == "completed":
-                return f"Hermes completed run {run_id}: {state.get('output', '')}"
-            return f"Hermes run {run_id} has status {state['status']}. No completion is confirmed."
+        async def check_hermes_run(topic: str = "") -> str:
+            """Answer a follow-up about a task, by topic when one is given."""
+            topic = topic.strip()
+            matches = tasks.find(topic) if topic else []
+            if not matches:
+                matches = tasks.outstanding()[:3] or tasks.recent(3)
+            if not matches:
+                return "No Hermes task has been started in this conversation."
+            lines = []
+            for item in matches:
+                if item.status == "completed":
+                    lines.append(f"Done: \"{item.task}\" -> {item.answer[:500]}")
+                else:
+                    lines.append(f"Still {item.status}: \"{item.task}\"")
+            return " | ".join(lines)
 
         tools.extend(
             [
                 function_tool_factory(
                     delegate_to_hermes,
                     name="delegate_to_hermes",
-                    description="Start an asynchronous Hermes task; return a run ID and do not claim completion.",
+                    description=(
+                        "Use this immediately for anything you cannot answer or do "
+                        "yourself: current date/time, live facts, web lookups, research, "
+                        "coding, calculations beyond trivial arithmetic. Never say you "
+                        "lack access to the time or to live information; delegate it. "
+                        "Company services live behind Hermes: company-mail "
+                        "(read-only, content allowed) and company-calendar (read-only) "
+                        "via service_connection_read. Delegate email and calendar "
+                        "questions there. Hermes runs several tasks at once, so a new question is sent "
+                        "even while another is still running; never wait for a pending "
+                        "task before starting the next one. Do not ask for permission "
+                        "and do not claim an answer before it arrives."
+                    ),
                 ),
                 function_tool_factory(
                     check_hermes_run,
                     name="check_hermes_run",
-                    description="Check a Hermes task status or read the completed answer by run ID.",
+                    description=(
+                        "Use for any follow-up about earlier Hermes work. Pass the "
+                        "topic the user asked about (for example 'time' or 'election "
+                        "results') to get that task's real status and answer. Omit the "
+                        "topic to summarize outstanding and recent tasks."
+                    ),
                 ),
             ]
         )

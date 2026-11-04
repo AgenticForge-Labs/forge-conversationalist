@@ -328,7 +328,7 @@ def test_session_uses_profile_and_livekit_owned_vad_turns() -> None:
     assert session["llm"] == ("llm", {"model": "provider/llm"})
     assert session["tts"] == ("tts", {"model": "provider/tts", "voice": "voice"})
     assert session["vad"] == "silero"
-    assert session["turn_handling"] == {"turn_detection": "detector"}
+    assert session["turn_handling"] == {"turn_detection": "detector", "preemptive_generation": {"enabled": True, "preemptive_tts": True}}
 
 
 @pytest.mark.parametrize(("sensitivity", "expected_kwargs"), [

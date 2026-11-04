@@ -18,6 +18,19 @@ type Catalog = {
   performers: Record<string, Performer>;
 };
 type ActionReceipt = { outcome?: string; reason?: string; action_id?: string; completion?: string };
+type Capabilities = {
+  schema: "forge.capabilities.v1";
+  integrations: {
+    hermes?: boolean;
+    company_services?: string[];
+    mcp_tools?: string[];
+  };
+  performers: Record<string, {
+    status?: string;
+    expressions?: string[];
+    presence_behaviors?: string[];
+  }>;
+};
 
 const LABELS: Record<string, string> = {
   reachy: "Reachy Mini",
@@ -42,6 +55,7 @@ function findAgent(room: ReturnType<typeof useRoomContext>): RemoteParticipant |
 export function RobotControls() {
   const room = useRoomContext();
   const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [unavailable, setUnavailable] = useState("");
   const [running, setRunning] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<Record<string, string>>({});
@@ -67,6 +81,12 @@ export function RobotControls() {
       }
       setCatalog(result);
       setUnavailable("");
+      try {
+        const caps = JSON.parse(await callRobot("forge.get_capabilities", {})) as Capabilities;
+        if (caps?.schema === "forge.capabilities.v1") setCapabilities(caps);
+      } catch {
+        setCapabilities(null);
+      }
     } catch {
       setCatalog(null);
       setUnavailable("No authorized robot ensemble is available in this room.");
@@ -136,6 +156,26 @@ export function RobotControls() {
         <button type="button" className="secondary" onClick={() => void refresh()}>Refresh robots</button>
       </div>
       <p className="subtle">Only actions advertised by each operator-approved robot are shown. Idle, listening and speaking are automatic. A requested gesture is not proof of physical completion.</p>
+      {capabilities && (
+        <fieldset className="robot-performer">
+          <legend>Tools and capabilities</legend>
+          <p className="subtle">
+            <strong>Hermes delegation:</strong> {capabilities.integrations.hermes ? "available" : "unavailable"}
+          </p>
+          <p className="subtle">
+            <strong>Company services (read-only):</strong>{" "}
+            {capabilities.integrations.company_services?.length
+              ? capabilities.integrations.company_services.join(", ")
+              : "none configured"}
+          </p>
+          <p className="subtle">
+            <strong>MCP tools:</strong>{" "}
+            {capabilities.integrations.mcp_tools?.length
+              ? capabilities.integrations.mcp_tools.join(", ")
+              : "none configured"}
+          </p>
+        </fieldset>
+      )}
       {unavailable ? <p className="subtle" role="status">{unavailable}</p> : null}
       {catalog && Object.entries(catalog.performers).map(([performerId, performer]) => {
         const actions = Array.isArray(performer.expressions)

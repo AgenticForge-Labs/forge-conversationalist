@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PresentationPreview } from "./presentation-preview";
 import { RobotControls } from "./robot-controls";
+import { AudioWaveform } from "./audio-waveform";
 import {
   BarVisualizer,
   LiveKitRoom,
@@ -35,6 +36,10 @@ type RoomSpeechSettings = {
   onVadSensitivityChange: (value: string) => void;
   turnPacing: string;
   onTurnPacingChange: (value: string) => void;
+  bargeIn: string;
+  onBargeInChange: (value: string) => void;
+  resumeFalseInterruption: boolean;
+  onResumeFalseInterruptionChange: (value: boolean) => void;
 };
 
 type MicrophoneMode = "continuous" | "press-to-talk";
@@ -485,6 +490,22 @@ function RoomConversation({ speech, microphoneMode, onMicrophoneModeChange, endi
           <option value="patient">Longer pause</option>
         </select>
         <p className="subtle">Applies on the next conversation. A longer pause gives you more time to think before 4G responds.</p>
+        <label htmlFor="barge-in">Interrupt 4G while it is speaking</label>
+        <select id="barge-in" value={speech.bargeIn} onChange={(event) => speech.onBargeInChange(event.target.value)}>
+          <option value="off">Off — let 4G finish</option>
+          <option value="hard">Hard — needs a few clear words</option>
+          <option value="standard">Standard — one short word</option>
+          <option value="easy">Easily — any speech</option>
+        </select>
+        <p className="subtle">Applies on the next conversation. &quot;Hard&quot; stops accidental cut-offs from coughs and background noise.</p>
+        <label>
+          <input
+            type="checkbox"
+            checked={speech.resumeFalseInterruption}
+            onChange={(event) => speech.onResumeFalseInterruptionChange(event.target.checked)}
+          />{" "}
+          Resume speaking if the interruption was a false alarm
+        </label>
       </fieldset>
       <fieldset className="device-chooser" disabled={changingSpeech}>
         <legend>Speech model and voice</legend>
@@ -570,6 +591,8 @@ export default function Home() {
   const [speechEditRevision, setSpeechEditRevision] = useState(0);
   const [vadSensitivity, setVadSensitivity] = useState("standard");
   const [turnPacing, setTurnPacing] = useState("standard");
+  const [bargeIn, setBargeIn] = useState("standard");
+  const [resumeFalseInterruption, setResumeFalseInterruption] = useState(true);
   const [microphoneMode, setMicrophoneMode] = useState<MicrophoneMode>("press-to-talk");
   const [microphoneModeReady, setMicrophoneModeReady] = useState(false);
   const [room, setRoom] = useState<RoomGrant | null>(null);
@@ -645,6 +668,13 @@ export default function Home() {
           ...(ttsModel ? { ttsModel, ttsVoice } : {}),
           vadSensitivity,
           turnPacing,
+          interruption: {
+            enabled: bargeIn !== "off",
+            mode: "vad",
+            min_words: bargeIn === "hard" ? 3 : bargeIn === "standard" ? 1 : 0,
+            min_duration: bargeIn === "hard" ? 0.6 : bargeIn === "standard" ? 0.3 : 0.1,
+            resume_false_interruption: resumeFalseInterruption,
+          },
         }),
       });
       const responseBody = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -745,13 +775,14 @@ export default function Home() {
             onError={() => setError("The LiveKit connection failed.")}
           >
             <RoomConversation
-              speech={{ models: ttsModels, catalogError: ttsCatalogError, model: ttsModel, voice: ttsVoice, onChange: changeSpeech, onEditStart: () => setSpeechEditRevision((revision) => revision + 1), editRevision: speechEditRevision, vadSensitivity, onVadSensitivityChange: setVadSensitivity, turnPacing, onTurnPacingChange: setTurnPacing }}
+              speech={{ models: ttsModels, catalogError: ttsCatalogError, model: ttsModel, voice: ttsVoice, onChange: changeSpeech, onEditStart: () => setSpeechEditRevision((revision) => revision + 1), editRevision: speechEditRevision, vadSensitivity, onVadSensitivityChange: setVadSensitivity, turnPacing, onTurnPacingChange: setTurnPacing, bargeIn, onBargeInChange: setBargeIn, resumeFalseInterruption, onResumeFalseInterruptionChange: setResumeFalseInterruption }}
               microphoneMode={microphoneMode}
               onMicrophoneModeChange={changeMicrophoneMode}
               ending={ending}
               onEnd={() => void endConversation()}
               resumed={room.resumed}
             />
+            <AudioWaveform />
           </LiveKitRoom>
           {error ? <p className="error" role="alert">{error}</p> : null}
         </>

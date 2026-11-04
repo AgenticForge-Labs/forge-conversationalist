@@ -7,9 +7,11 @@ transport, model client, agent memory, MCP gateway or robot is created here.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import replace
 from typing import Any
 
@@ -45,8 +47,20 @@ INSTRUCTIONS = (
     "business information when those integrations are unavailable. "
     "Use only tools actually available in this room. Never imply an MCP or "
     "robot action was successful without a returned confirmed outcome. "
-    "Hermes delegation starts an asynchronous run: acceptance is not completion. "
-    "Offer to check the actual run status when the user asks about progress. "
+    "Anything you cannot do yourself goes straight to Hermes without asking the "
+    "user for permission first: the current date or time, live facts, web lookups, "
+    "research, coding, and anything beyond trivial arithmetic. Never tell the user "
+    "you lack access to the time or to live information; delegate it instead. "
+    "Questions are independent: if one task is still running, delegate the next "
+    "question immediately rather than waiting or asking the user to come back. "
+    "Acknowledge a delegated task in at most four words (for example \"On it.\"); "
+    "never read task identifiers "
+    "aloud, and never claim an answer before it arrives. Each result is announced "
+    "with its topic and kept for this conversation: when the user asks about one, "
+    "use check_hermes_run with that topic instead of guessing or re-running it. "
+    "Company email and calendar are read-only through Hermes company services; "
+    "never claim to have sent mail or changed a calendar, because those writes "
+    "are not available to you. "
     "Physical motion and consequential changes require the gateway's own "
     "permission, validation, and human approval. When a restricted Reachy move "
     "tool is available, call it only after the user explicitly asks for a "
@@ -61,6 +75,7 @@ def build_voice_session(
     *,
     vad_sensitivity: str = "standard",
     turn_pacing: str = "standard",
+    interruption: dict[str, object] | None = None,
     tts_sample_rate: int = 24000,
     sdk: object | None = None,
     openai_plugin: object | None = None,
@@ -101,20 +116,27 @@ def build_voice_session(
             use_realtime=False,  # OpenRouter offers buffered transcription, not WS STT
         )
     )
-    llm = (
-        sdk.inference.LLM(model=profile.llm_model)
-        if profile.llm_provider == "livekit"
-        else openai_plugin.LLM.with_openrouter(
-            model=profile.llm_model,
-            api_key=api_key,
-            base_url=OPENROUTER_API_BASE,
-        )
-    )
+    llm = _build_llm(profile, api_key=api_key, openai_plugin=openai_plugin, sdk=sdk)
     tts = _build_tts(profile, api_key=api_key, openai_plugin=openai_plugin,
                      tts_sample_rate=tts_sample_rate, sdk=sdk)
     turn_handling = {
         "turn_detection": _build_turn_detector(sdk),
     }
+    # Speculative generation starts the reply before the user's turn is fully
+    # committed, so the model's think time overlaps the end of their speech.
+    # Measured LLM time-to-first-sentence is ~0.5-1.0 s, which is the amount
+    # this can hide. Operators can still disable it explicitly.
+    preemptive = os.getenv("CONVERSATIONALIST_PREEMPTIVE_GENERATION", "true").strip().lower()
+    if preemptive not in {"false", "0", "no"}:
+        # Speculative TTS additionally hides the synthesis step, at the cost of
+        # occasionally synthesizing audio that is never played.
+        preemptive_tts = os.getenv(
+            "CONVERSATIONALIST_PREEMPTIVE_TTS", "true"
+        ).strip().lower() not in {"false", "0", "no"}
+        turn_handling["preemptive_generation"] = {
+            "enabled": True,
+            "preemptive_tts": preemptive_tts,
+        }
     if turn_pacing != "standard":
         delay = 0.25 if turn_pacing == "quick" else 1.2
         turn_handling["endpointing"] = {"mode": "fixed", "min_delay": delay, "max_delay": delay}
@@ -122,6 +144,11 @@ def build_voice_session(
         # Adaptive interruption uses a separate LiveKit cloud endpoint.
         # Keep local runs fully on-device with the standard VAD strategy.
         turn_handling["interruption"] = {"mode": "vad"}
+    if interruption:
+        turn_handling["interruption"] = {
+            **turn_handling.get("interruption", {}),
+            **interruption,
+        }
 
     threshold = VAD_SENSITIVITY_THRESHOLDS[vad_sensitivity]
     vad = silero.VAD.load(
@@ -134,6 +161,42 @@ def build_voice_session(
         tts=tts,
         vad=vad,
         turn_handling=sdk.TurnHandlingOptions(**turn_handling),
+    )
+
+
+def _build_llm(
+    profile: CloudProfile,
+    *,
+    api_key: str | None = None,
+    openai_plugin: object | None = None,
+    sdk: object | None = None,
+) -> object:
+    """Build the conversational LLM, with reasoning disabled for voice.
+
+    A reasoning-default model emits hidden reasoning tokens before any spoken
+    text. Measured on qwen3.5-9b: no content at all inside a 40-token budget,
+    versus 0.59 s to first token with reasoning off. Voice turns want the
+    answer, not a scratchpad, so the OpenRouter path disables it by default.
+    Set CONVERSATIONALIST_LLM_REASONING=auto to keep the model default.
+    """
+    if profile.llm_provider == "livekit":
+        if sdk is None:
+            from livekit import agents as sdk
+        return sdk.inference.LLM(model=profile.llm_model)
+    if openai_plugin is None:
+        from livekit.plugins import openai as openai_plugin
+    key = api_key if api_key is not None else os.getenv("OPENROUTER_API_KEY")
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
+    mode = os.getenv("CONVERSATIONALIST_LLM_REASONING", "off").strip().lower()
+    extra: dict[str, object] = {}
+    if mode not in {"auto", "on", "true", "1", "yes"}:
+        extra["reasoning"] = {"enabled": False}
+    return openai_plugin.LLM(
+        model=profile.llm_model,
+        api_key=key,
+        base_url=OPENROUTER_API_BASE,
+        extra_body=extra,
     )
 
 
@@ -227,6 +290,7 @@ async def entrypoint(ctx: object) -> None:
         profile,
         vad_sensitivity=vad_sensitivity,
         turn_pacing=turn_pacing,
+        interruption=_requested_interruption(metadata),
         tts_sample_rate=selected_model["sampleRate"] if selected_model else _default_tts_sample_rate(profile),
     )
     install_assistant_text_hook(
@@ -306,6 +370,44 @@ async def entrypoint(ctx: object) -> None:
             ensemble = None
     # An opt-in TTS node observes generated PCM without changing LiveKit
     # playback; missing Puppeteer support leaves the ordinary agent path.
+    class _SpokenHermesNotifier:
+        """Speak a finished Hermes result without being asked for status."""
+
+        def __init__(self) -> None:
+            self.session = None
+            self._lock = asyncio.Lock()
+
+        async def __call__(self, text: str) -> None:
+            # Results must not be dropped just because the room was mid-turn.
+            # Wait far longer for a pause, and deliver one result at a time.
+            async with self._lock:
+                session = self.session
+                if session is None:
+                    return
+                deadline = time.monotonic() + 300.0
+                while time.monotonic() < deadline:
+                    if getattr(session, "agent_state", "idle") in {"idle", "listening"}:
+                        break
+                    await asyncio.sleep(0.5)
+                else:
+                    logger.warning("Hermes announcement forced after a long busy room")
+                for attempt in range(3):
+                    try:
+                        logger.info("announcing finished Hermes task")
+                        await session.generate_reply(
+                            instructions=(
+                                "A delegated Hermes task has finished. Tell the user the "
+                                "result briefly and naturally in your own voice, and say "
+                                "plainly if it failed or was cut off. Do not add anything "
+                                "beyond this report: " + text
+                            )
+                        )
+                        return
+                    except Exception:
+                        logger.exception("Hermes completion announcement failed (attempt %s)", attempt + 1)
+                        await asyncio.sleep(1.0)
+
+    hermes_notifier = _SpokenHermesNotifier()
     agent_class = (
         agent_class_with_speech_envelope(Agent, ensemble.offer_speech_envelope)
         if envelope_opt_in and ensemble is not None else Agent
@@ -319,9 +421,12 @@ async def entrypoint(ctx: object) -> None:
             agent_integrations,
             embodiment_session=embodiment if authorized_identity else None,
             ensemble_session=ensemble if authorized_identity else None,
+            hermes_completion_notifier=hermes_notifier,
+            hermes_room=room_name,
         ),
     )
     await session.start(room=ctx.room, agent=agent, room_options=room_options)
+    hermes_notifier.session = session
     if playback_presence is not None and ensemble is not None:
         output = getattr(getattr(session, "output", None), "audio", None)
         try:
@@ -355,6 +460,16 @@ async def entrypoint(ctx: object) -> None:
                 ensemble=ensemble,
                 authorized_identity=authorized_identity,
                 room=ctx.room,
+                capabilities={
+                    "hermes": getattr(agent_integrations, "hermes", None) is not None,
+                    "company_services": sorted(
+                        services.connections
+                    ) if (services := getattr(
+                        agent_integrations, "company_services", None
+                    )) else [],
+                    "mcp_tools": sorted(mcp.allowed_tools)
+                    if (mcp := getattr(agent_integrations, "mcp", None)) else [],
+                },
             )
     # A fixed greeting needs TTS only. Asking the LLM to generate it with only
     # system instructions fails on providers that require a user query and
@@ -546,6 +661,42 @@ def _requested_vad_sensitivity(metadata: str) -> str:
     )
 
 
+def _requested_interruption(metadata: str) -> dict[str, object]:
+    """Read operator-chosen barge-in behaviour from signed job metadata.
+
+    Only bounded, allowlisted fields are accepted. A malformed request falls
+    back to the SDK defaults rather than guessing.
+    """
+    if not metadata:
+        return {}
+    try:
+        request = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(request, dict):
+        return {}
+    raw = request.get("interruption")
+    if not isinstance(raw, dict):
+        return {}
+    options: dict[str, object] = {}
+    enabled = raw.get("enabled")
+    if isinstance(enabled, bool):
+        options["enabled"] = enabled
+    mode = raw.get("mode")
+    if mode in {"adaptive", "vad"}:
+        options["mode"] = mode
+    min_words = raw.get("min_words")
+    if isinstance(min_words, int) and not isinstance(min_words, bool) and 0 <= min_words <= 10:
+        options["min_words"] = min_words
+    min_duration = raw.get("min_duration")
+    if isinstance(min_duration, (int, float)) and not isinstance(min_duration, bool) and 0.0 <= float(min_duration) <= 2.0:
+        options["min_duration"] = float(min_duration)
+    resume = raw.get("resume_false_interruption")
+    if isinstance(resume, bool):
+        options["resume_false_interruption"] = resume
+    return options
+
+
 def _requested_turn_pacing(metadata: str) -> str:
     try:
         request = json.loads(metadata)
@@ -553,6 +704,28 @@ def _requested_turn_pacing(metadata: str) -> str:
         return "standard"
     value = request.get("turn_pacing") if isinstance(request, dict) else None
     return value if isinstance(value, str) and value in {"quick", "standard", "patient"} else "standard"
+
+
+def _prewarm_job(_process: object) -> None:
+    """Import latency-sensitive modules before the first turn.
+
+    Tool discovery and the realtime LLM pull in large schema packages. Doing
+    that inside the first reply stalls the event loop for a few hundred
+    milliseconds, which is audible as a late answer.
+    """
+    import importlib
+
+    for name in (
+        "mcp",
+        "mcp_types",
+        "openai",
+        "livekit.agents.mcp",
+        "livekit.plugins.openai",
+    ):
+        try:
+            importlib.import_module(name)
+        except Exception:
+            logger.debug("prewarm import skipped: %s", name, exc_info=True)
 
 
 def main() -> None:
@@ -565,7 +738,7 @@ def main() -> None:
     load_integrations()
     if profile.requires_openrouter and not os.getenv("OPENROUTER_API_KEY"):
         raise RuntimeError("OPENROUTER_API_KEY is required for selected OpenRouter stages")
-    server = AgentServer()
+    server = AgentServer(setup_fnc=_prewarm_job)
 
     server.rtc_session(agent_name=AGENT_NAME)(entrypoint)
 
