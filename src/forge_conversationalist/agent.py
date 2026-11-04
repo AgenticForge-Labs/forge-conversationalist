@@ -145,9 +145,15 @@ def build_voice_session(
     if turn_pacing != "standard":
         delay = 0.25 if turn_pacing == "quick" else 1.2
         turn_handling["endpointing"] = {"mode": "fixed", "min_delay": delay, "max_delay": delay}
-    if local_turn_model:
-        # Adaptive interruption uses a separate LiveKit cloud endpoint.
-        # Keep local runs fully on-device with the standard VAD strategy.
+    # Adaptive interruption is a remote LiveKit Cloud model with no local
+    # fallback, unlike the turn detector's v1-mini. Keep local rooms on VAD
+    # unless an operator explicitly asks for adaptive inference.
+    interruption_mode = os.getenv(
+        "CONVERSATIONALIST_INTERRUPTION_MODE", "auto"
+    ).strip().lower()
+    if interruption_mode == "adaptive":
+        turn_handling["interruption"] = {"mode": "adaptive"}
+    elif local_turn_model or interruption_mode == "vad":
         turn_handling["interruption"] = {"mode": "vad"}
     if interruption:
         turn_handling["interruption"] = {
