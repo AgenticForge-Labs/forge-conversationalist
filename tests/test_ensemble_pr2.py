@@ -462,3 +462,34 @@ async def test_shutdown_without_complete_idle_performer_evidence_never_rearms(
     assert outcome["physical_settling"] == "unconfirmed"
     with pytest.raises(RuntimeError, match="rearm"):
         await room.reconnect()
+
+
+
+@pytest.mark.anyio
+async def test_shutdown_resolves_pending_status_without_waiting_for_timeout(tmp_path):
+    room = EnsembleSession(
+        PuppeteerEnsembleConfig(operator_config(tmp_path)),
+        room_id="room", caller_id="owner",
+    )
+    requested = asyncio.get_running_loop().create_future()
+
+    async def fake_server():
+        tool, _, future = await room._queue.get()
+        assert tool == "_close"
+        assert future is not None
+        future.set_result({
+            "outcome": "accepted",
+            "performers": {
+                "reachy": {"status": "idle"},
+                "stackchan": {"status": "idle"},
+            },
+        })
+
+    room._task = asyncio.create_task(fake_server())
+    room._enqueue("ensemble_state", {}, requested)
+    result = await room.close()
+    assert result["outcome"] == "acknowledged"
+    assert requested.done()
+    assert requested.result() == {
+        "outcome": "unknown", "reason": "room_shutdown", "retry_safe": False,
+    }
