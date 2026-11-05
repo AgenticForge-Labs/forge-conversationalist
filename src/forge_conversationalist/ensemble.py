@@ -125,7 +125,7 @@ class PuppeteerEnsembleConfig:
         profiles = data.get("motion_profiles", {})
         driven = data.get("speech_driven_performers", [])
         if not isinstance(profiles, dict) or not isinstance(driven, (list, tuple)):
-            raise ValueError("motion profiles and speech performers must be explicit mappings")
+            raise TypeError("motion profiles and speech performers must be explicit mappings")
         if any(not isinstance(x, str) or x not in ids for x in driven) or len(set(driven)) != len(driven):
             raise ValueError("speech-driven performer identities must be unique and selected")
         if set(driven) - {reachy.get("instance_id"), (
@@ -463,9 +463,9 @@ class EnsembleSession:
             or set(performers) != set(self.config.performer_ids)
         ):
             raise RuntimeError("Puppeteer returned unexpected room or performer identities")
-        for name, detail in performers.items():
+        for detail in performers.values():
             if not isinstance(detail, dict):
-                raise RuntimeError("Puppeteer performer capability details unavailable")
+                raise TypeError("Puppeteer performer capability details unavailable")
             # Existing synthetic servers can be deliberately minimal; any
             # advertised revision/behavior list must still be well-formed.
             revision = detail.get("behavior_revision")
