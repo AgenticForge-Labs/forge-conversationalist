@@ -403,3 +403,22 @@ async def test_repeated_two_performer_real_stdio_fake_sessions_with_randomized_t
         assert not any(e["state"] == "speaking" for e in events[
             next(i for i, item in enumerate(events) if item["interrupted"]):
         ])
+
+
+def test_following_idle_never_erases_unacknowledged_interrupt(tmp_path):
+    room = EnsembleSession(
+        PuppeteerEnsembleConfig(operator_config(tmp_path)),
+        room_id="signed-room", caller_id="owner",
+    )
+    room._task = Active()
+    room.observe("speaking")
+    room.observe("listening", interrupted=True)
+    room.observe("idle")
+    pending = []
+    while not room._queue.empty():
+        tool, event, _ = room._queue.get_nowait()
+        assert tool == "ensemble_presence"
+        pending.append(event)
+    assert [x["state"] for x in pending] == ["listening", "idle"]
+    assert [x["interrupted"] for x in pending] == [True, False]
+    assert [x["sequence"] for x in pending] == [1, 2]
