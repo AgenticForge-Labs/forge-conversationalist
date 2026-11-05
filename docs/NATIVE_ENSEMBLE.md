@@ -169,7 +169,10 @@ LLM tokens or private account content reach the robot.
 ## Ordered interruption and bounded shutdown
 
 Urgent interrupted/listening presence and room closure overtake unsent
-optional envelope work. Pending older speaking states are superseded;
+optional envelope work. Any in-flight optional envelope MCP call has a
+350 ms timeout, after which that performer's feature stream is disabled;
+optional feature transport must not wait for the full 15-second semantic
+action timeout. Pending older speaking states are superseded;
 queued gestures canceled by a true interruption are reported denied
 before dispatch. This cannot rewind an action **already** admitted to the
 SDK; only Puppeteer's STOP/quarantine evidence controls that outcome.
@@ -185,8 +188,11 @@ an MCP disconnect acknowledgment when available, and clear separate
 `neutral_request: not_attempted`,
 `sleep_request: not_attempted`,
 `physical_settling: unconfirmed` fields. An `acknowledged`
-disconnect is *not* proof of a physically settled robot. If MCP/STOP
-is unknown, or any performer is blocked/unavailable, the room remains
+disconnect is *not* proof of a physically settled robot. An
+`acknowledged` result additionally requires one `idle` software status
+for **every** operator-selected performer in the returned Puppeteer snapshot;
+missing/unknown/blocked/unavailable statuses cannot be treated as a clean
+shutdown. If MCP/STOP is unknown, the room remains
 fenced from reconnecting until operator reconciliation.
 **No automatic neutral or sleep is issued:** Puppeteer PR #20 has not
 qualified that transition or obtained independent physical settling
