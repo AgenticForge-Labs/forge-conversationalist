@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -48,6 +49,9 @@ class PuppeteerEnsembleConfig:
     config_path: Path
     command: str = "forge-puppeteer-ensemble"
     performer_ids: tuple[str, ...] = field(init=False)
+    schema_version: int = field(init=False)
+    motion_profiles: dict[str, dict[str, str]] = field(init=False)
+    speech_driven_performers: tuple[str, ...] = field(init=False)
     digest: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -113,16 +117,90 @@ class PuppeteerEnsembleConfig:
                 raise ValueError(f"Puppeteer ensemble requires absolute {name}")
         if Path(data["action_journal"]).resolve() == Path(data["ownership_db"]).resolve():
             raise ValueError("Puppeteer action journal and ownership state must be distinct")
-        # All detailed hardware policy, SHA revision, calibration, servo limits,
-        # grants and preflight remain strictly enforced by the Puppeteer
-        # launcher and SDK at startup and at every native motion dispatch.
+        # Perform the no-I/O part of PR1's explicit profile admission again
+        # at the worker boundary. Actual SDK capability/geometry validation
+        # remains authoritative only in the Puppeteer launcher.
+        profiles = data.get("motion_profiles", {})
+        driven = data.get("speech_driven_performers", [])
+        if not isinstance(profiles, dict) or not isinstance(driven, (list, tuple)):
+            raise ValueError("motion profiles and speech performers must be explicit mappings")
+        if any(not isinstance(x, str) or x not in ids for x in driven) or len(set(driven)) != len(driven):
+            raise ValueError("speech-driven performer identities must be unique and selected")
+        if set(driven) - {reachy.get("instance_id"), (
+            stackchan.get("instance_id") if isinstance(stackchan, dict) else None
+        )}:
+            raise ValueError("SO-ARM is not approved for speech-reactive streaming")
+        reviewed: dict[str, dict[str, str]] = {}
+        for performer, choice in profiles.items():
+            if performer not in ids or not isinstance(choice, dict) or set(choice) - {"idle", "speaking"}:
+                raise ValueError("motion profile references an unsupported performer or field")
+            idle = choice.get("idle", "legacy")
+            speaking = choice.get("speaking", "legacy")
+            if idle not in {"legacy", "native_v1", "smooth_v2"} or speaking not in {
+                "legacy", "native_v1", "smooth_v2",
+            }:
+                raise ValueError("unknown Puppeteer motion profile")
+            if performer == (arm.get("instance_id") if isinstance(arm, dict) else None) and (
+                idle != "legacy" or speaking != "legacy"
+            ):
+                raise ValueError("SO-ARM only permits approved finite legacy choreography")
+            if performer == reachy.get("instance_id") and (
+                idle != "legacy" or speaking != "legacy"
+            ):
+                grants = reachy.get("allowed_tools", [])
+                neutral = data.get("reachy_neutral_antennas_rad")
+                sway = data.get("reachy_antenna_sway_rad", 0.18)
+                if not isinstance(grants, list) or "pose_and_antennas" not in grants:
+                    raise ValueError("native Reachy profiles require pose_and_antennas grant")
+                if (
+                    not isinstance(neutral, (list, tuple)) or len(neutral) != 2
+                    or any(type(v) not in (int, float) or not math.isfinite(v) for v in neutral)
+                    or type(sway) not in (int, float) or not math.isfinite(sway)
+                    or sway < 0 or any(abs(v) + sway > math.pi / 2 for v in neutral)
+                ):
+                    raise ValueError("native Reachy requires bounded reviewed antenna neutral")
+            if speaking == "smooth_v2" and performer not in driven:
+                raise ValueError("smooth_v2 speaking requires explicit speech-driven performer")
+            reviewed[performer] = {"idle": idle, "speaking": speaking}
         object.__setattr__(self, "performer_ids", ids)
+        object.__setattr__(self, "schema_version", data["schema_version"])
+        object.__setattr__(self, "motion_profiles", reviewed)
+        object.__setattr__(self, "speech_driven_performers", tuple(driven))
         object.__setattr__(self, "digest", hashlib.sha256(source).hexdigest())
 
     def require_unchanged(self) -> None:
         """Fail before starting the child if an approved config changed on disk."""
         if hashlib.sha256(self.config_path.read_bytes()).hexdigest() != self.digest:
             raise PermissionError("Puppeteer ensemble operator config changed since validation")
+
+    def preflight(self) -> dict[str, object]:
+        """No SDK import, device connection, motion, or credential disclosure.
+
+        An operator-readable *configuration* check, never evidence that the
+        connected hardware has the expected firmware or is settled.
+        """
+        self.require_unchanged()
+        return {
+            "schema": "forge.ensemble_preflight.v1",
+            "outcome": "static_config_valid",
+            "config_sha256": self.digest,
+            "schema_version": self.schema_version,
+            "performer_ids": list(self.performer_ids),
+            "motion_profiles": {
+                name: {
+                    "idle": self.motion_profiles.get(name, {}).get("idle", "legacy"),
+                    "speaking": self.motion_profiles.get(name, {}).get("speaking", "legacy"),
+                } for name in self.performer_ids
+            },
+            "speech_driven_performers": list(self.speech_driven_performers),
+            "sdk_connections_opened": False,
+            "physical_motion_dispatched": False,
+            "hardware_capabilities_verified": False,
+            "physical_neutral_verified": False,
+            "physical_stop_verified": False,
+            "physical_sleep_verified": False,
+            "acoustic_playout_measured": False,
+        }
 
 
 class EnsembleSession:
