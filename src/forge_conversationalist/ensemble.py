@@ -232,6 +232,7 @@ class EnsembleSession:
         self._motion_fenced = False
         self._shutdown_result: dict[str, object] | None = None
         self._requires_operator_reconciliation = False
+        self._close_lock = asyncio.Lock()
         # One optional envelope stream per performer. A performer's stream that
         # was dropped for backpressure stays dropped; it must never displace a
         # different performer's stream or the automatic presence sequence.
@@ -724,6 +725,10 @@ class EnsembleSession:
         return dict(self._shutdown_result) if self._shutdown_result is not None else None
 
     async def close(self) -> dict[str, object]:
+        async with self._close_lock:
+            return await self._close_once()
+
+    async def _close_once(self) -> dict[str, object]:
         """Bounded room shutdown via Puppeteer's own STOP/ownership lifecycle.
 
         Never issue an implicit neutral/recording/wake/sleep after an unknown

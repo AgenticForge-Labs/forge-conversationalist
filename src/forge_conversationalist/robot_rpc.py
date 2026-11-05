@@ -118,11 +118,14 @@ def register_robot_rpc(
             if request["connected"]:
                 state = await ensemble.reconnect()
             else:
-                await ensemble.close()
-                state = {"schema": SCHEMA, "performers": {}, "disconnected": True}
+                state = await ensemble.close()
         except (RuntimeError, ValueError, TimeoutError):
             raise reject("Robot connection change failed") from None
-        return json.dumps({"outcome": "ok", "state": state}, separators=(",", ":"), ensure_ascii=True)
+        confirmed = request["connected"] or state.get("outcome") in {"acknowledged", "not_active"}
+        return json.dumps({
+            "outcome": "ok" if confirmed else "unknown",
+            "state": state, "retry_safe": False,
+        }, separators=(",", ":"), ensure_ascii=True)
 
     register("forge.get_robots", get_robots)
     register("forge.set_robot_connection", set_connection)
