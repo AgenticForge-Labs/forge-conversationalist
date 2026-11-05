@@ -24,7 +24,15 @@ Robot integrations and external services require separate setup. Software tests 
 
 The worker requires Python 3.11–3.13; the example below uses Python 3.12 and `uv`. A LiveKit service and credentials for the selected providers are needed for a live session.
 
-1. Clone the repository, then copy `.env.example` to `.env.local`:\n\n   ```bash\n   git clone https://github.com/AgenticForge-Labs/forge-conversationalist.git\n   cd forge-conversationalist\n   cp .env.example .env.local\n   ```\n\n   Configure `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` and a long random `CONVERSATIONALIST_ACCESS_TOKEN`. Choose a `CONVERSATIONALIST_PRESET` of `livekit`, `openrouter`, or `hybrid`; add `OPENROUTER_API_KEY` to the worker environment when needed.
+1. Clone the repository, then copy `.env.example` to `.env.local`:
+
+   ```bash
+   git clone https://github.com/AgenticForge-Labs/forge-conversationalist.git
+   cd forge-conversationalist
+   cp .env.example .env.local
+   ```
+
+   Configure `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` and a long random `CONVERSATIONALIST_ACCESS_TOKEN`. Choose a `CONVERSATIONALIST_PRESET` of `livekit`, `openrouter`, or `hybrid`; add `OPENROUTER_API_KEY` to the worker environment when needed.
 2. Install and start the worker:
 
    ```bash
