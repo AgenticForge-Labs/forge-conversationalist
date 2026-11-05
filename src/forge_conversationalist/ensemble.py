@@ -321,6 +321,13 @@ class EnsembleSession:
                 queued_tool, queued_args, queued_future = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            if tool == "_close" and queued_future is not None:
+                if not queued_future.done():
+                    queued_future.set_result({
+                        "outcome": "unknown", "reason": "room_shutdown",
+                        "retry_safe": False,
+                    })
+                continue
             if queued_tool == "ensemble_speech_envelope":
                 for frame in queued_args.get("frames", ()):
                     if isinstance(frame, dict) and isinstance(frame.get("stream_id"), str):
@@ -619,6 +626,15 @@ class EnsembleSession:
                             if future is not None and not future.done():
                                 future.set_result({
                                     "outcome": "unknown", "reason": "disconnect_unconfirmed",
+                                })
+                        # An acknowledged disconnection ends this child; any
+                        # queued requests are no longer actionable.
+                        while not self._queue.empty():
+                            _, _, pending_future = self._queue.get_nowait()
+                            if pending_future is not None and not pending_future.done():
+                                pending_future.set_result({
+                                    "outcome": "unknown", "reason": "room_shutdown",
+                                    "retry_safe": False,
                                 })
                         break
                     if tool == "ensemble_speech_envelope" and (
