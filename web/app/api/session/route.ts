@@ -4,7 +4,7 @@ import { ParticipantInfo_Kind, RoomAgentDispatch, RoomConfiguration } from "@liv
 import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { fetchAffordableSpeechModels } from "@/lib/openrouter-tts";
 import { decodeSessionBinding, encodeSessionBinding } from "@/lib/session-binding.mjs";
-import { allowsLocalAutoLogin } from "@/lib/local-auto-login.mjs";
+import { allowsLocalAutoLogin, isLoopbackDevelopment } from "@/lib/local-auto-login.mjs";
 
 export const runtime = "nodejs";
 
@@ -51,6 +51,10 @@ export async function GET(request: NextRequest) {
     nodeEnv: process.env.NODE_ENV,
     hostname: request.nextUrl.hostname,
     fetchSite: request.headers.get("sec-fetch-site"),
+    allowAnyLoopback: isLoopbackDevelopment({
+      nodeEnv: process.env.NODE_ENV,
+      hostname: request.nextUrl.hostname,
+    }),
   })) {
     const response = NextResponse.json({ authorized: true }, { headers: { "Cache-Control": "no-store" } });
     response.cookies.set(ACCESS_COOKIE, configured, cookieOptions(request));
@@ -78,12 +82,17 @@ export async function POST(request: NextRequest) {
   const bearer = request.headers.get("authorization") ?? "";
   const bearerAuthorized = bearer.startsWith("Bearer ") && authorized(bearer.slice(7), configured);
   const cookieAuthorized = requestHasValidCookie(request, configured);
-  if (!bearerAuthorized && !cookieAuthorized) {
+  const loopbackDevelopment = isLoopbackDevelopment({
+    nodeEnv: process.env.NODE_ENV,
+    hostname: request.nextUrl.hostname,
+  });
+  if (!bearerAuthorized && !cookieAuthorized && !loopbackDevelopment) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const requestOrigin = request.headers.get("origin");
   const expectedOrigin = `${request.nextUrl.protocol}//${request.headers.get("host") ?? ""}`;
-  if (cookieAuthorized && !bearerAuthorized && requestOrigin !== expectedOrigin) {
+  if (cookieAuthorized && !bearerAuthorized && !loopbackDevelopment
+      && requestOrigin !== expectedOrigin) {
     return NextResponse.json({ error: "Cross-origin request denied" }, { status: 403 });
   }
   let requestedVoice: unknown;
