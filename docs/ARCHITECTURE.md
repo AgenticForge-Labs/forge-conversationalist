@@ -72,9 +72,29 @@ signed identity are required before the native SDK child starts.
 See [Native Ensemble](NATIVE_ENSEMBLE.md). 4G persona migration and
 physical output timing are still separate acceptance work.
 
+## PR2 native room authority and shutdown
+
+The existing Puppeteer MCP child now consumes independently reviewed
+legacy/native_v1/smooth_v2 profile selection from an operator-owned config,
+after read-only preflight and an exact advertised performer/behavior catalog.
+Optional TTS-frame observation is content-free, attributed to each performer
+and runs through the **same** MCP child. The LiveKit audio pipeline remains
+unchanged; a generated PCM timestamp or LiveKit playback callback does not
+verify a real speaker or physical movement.
+
+On signed participant departure, LiveKit room loss or worker shutdown, the
+same `EnsembleSession` fences new cues, prioritizes an interrupted
+room presence ahead of old feature queues, requests Puppeteer's
+bounded disconnected/STOP lifecycle, and emits an explicit
+`forge.ensemble_shutdown.v1` acknowledgement/uncertainty record.
+Actual neutral convergence, motor torque and sleep remain unknown unless
+separately attended and measured. There is no parallel controller or
+automatic neutral/sleep recovery. Puppeteer PR #20 remains independent.
+
 ## Deferred
 A Platform-owned authenticated communication feed, scoped event fanout,
 room-origin filtering, alert preferences, privacy policy,
-real display/light/robot renderers, multi-participant microphone/speaker
-arbitration and live hardware tests. No amplitude-reactive robot motion
-is desired or planned.
+additional approved display/light renderers, multi-participant microphone/speaker
+arbitration and live hardware tests. Opt-in content-free speech features now
+flow to Puppeteer's authorized profile in software, but speaker alignment
+and real robot movement remain unqualified.

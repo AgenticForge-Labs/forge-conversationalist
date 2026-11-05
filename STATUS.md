@@ -1,5 +1,13 @@
 # Project status and development history
 
+As of November 5, 2026, dependent Conversationalist PR #31 implements
+additional operator profile checks, room/owner disconnect fencing, a
+nonmoving static preflight command, and honest shutdown evidence on top of
+merged Puppeteer PR #40 (SHA `979da719834b1e04641097555eb017c40d55f011`).
+This is **software-only**. See `docs/NATIVE_ENSEMBLE.md` for current
+guidance; live voice and hardware acceptance are separate. PR #20's
+neutral/sleep qualification has not merged.
+
 The notes below are a snapshot of the previous README from November 4, 2026. They preserve detailed setup, operational boundaries, implementation history and acceptance evidence. Some PR references, plans, commands and claims may be superseded; consult current code and the linked technical documentation. Simulation and CI do not qualify real hardware or external services.
 
 At the time of this snapshot, the app supported robot-independent LiveKit voice, optional scoped MCP and Hermes integrations, and opt-in Puppeteer embodiment. Live service, company-gateway and robot acceptance have separate requirements.

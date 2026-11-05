@@ -152,11 +152,13 @@ PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 i
   a second sink, decoder, player, or audio service for Puppeteer.
 - Preserve the same room-owned MCP client, ordered presence, immediate
   interruption and uncertain STOP quarantine. Never pass raw PCM to robots.
-- The analyzer alone is not integrated into a live room, authorized for
-  physical motion, or synchronized to a speaker; each stage must be explicit.
+- The analyzer is opt-in on the existing room-owned TTS stream and feature
+  queue; only Puppeteer's independently reviewed motion profile may
+  turn fresh features into SDK-targeted speaking. These are not acoustically
+  synchronized to a speaker; each activation stage must be explicit.
 
 
-## LiveKit outgoing PCM observation (opt-in preview only)
+## LiveKit outgoing PCM observation (opt-in; SDK dispatch only when separately granted)
 
 - CONVERSATIONALIST_OUTGOING_SPEECH_ENVELOPE=1 wraps only outgoing synthesized
   TTS frames with the default LiveKit Agent.tts_node stream; original audio
@@ -167,6 +169,31 @@ PRs #1–#3 are merged into main. Puppeteer native three-robot ensemble PR #13 i
   per MCP batch without blocking voice or saturating important presence events.
   Queue pressure disables that stream's observation; it is never retried.
 - Frame offsets are generated PCM time, not measured actual speaker playout.
-  No robot motion, physical clearance or STOP/rearm authorization is implied.
-- Preserve existing unknown-action quarantine. A late PCM batch must not be
-  allowed to rearm or move a performer. Puppeteer currently only previews.
+  The ingestion tool only updates observations. The Puppeteer PR #40
+  `smooth_v2` profile can drive motion through the *same* SDK runtime if and
+  only if independently authorized; there is no new motion grant from audio.
+- Preserve existing unknown-action quarantine. A late PCM batch must not
+  rearm or move a performer. An urgent interrupted state must overtake queued
+  optional batches, and old streams remain fenced.
+
+## PR2 room lifecycle and nonmoving preflight (2026-11-05)
+- Puppeteer PR #40 is merged at
+  `979da719834b1e04641097555eb017c40d55f011`; use this SHA,
+  not historical PR #13/25 pins. Conversationalist PR #31 owns the
+  dependent software integration on one branch, not a new robot controller.
+- `PuppeteerEnsembleConfig.preflight()` and the preflight CLI validate
+  local operator config, exact identities, independent profile choices,
+  reviewed neutral file and grants without opening any SDK or MCP connection.
+  An offline pass is never evidence of physical permission or safety.
+- Startup must verify the authoritative Puppeteer behavior catalog,
+  SHA-pinned revision formatting, exact performer IDs and live SDK readiness
+  before voice tools or room presence. Failure falls back to no-robot voice.
+- The room-owned child closes on worker shutdown, signed owner departure or
+  LiveKit room disconnect. It reports bounded, per-performer disconnect
+  evidence. Do not claim physically settled, neutral or asleep based on SDK
+  acknowledgement, daemon health or LiveKit callback.
+- Do **not** issue an automatic neutral or sleep after ambiguous STOP; those
+  remain Puppeteer/hardware-gated (separate PR #20). Quarantine and
+  operator reconciliation prevent auto-reconnect/rearm.
+- `forge.set_robot_connection` must not report an unconfirmed shutdown as
+  successful. Preserve exact signed participant identity checks.

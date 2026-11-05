@@ -12,11 +12,23 @@ PR #3 (merged): device-independent presentation signals, optional
 status chimes and emotion vocabulary, browser microphone/speaker selectors,
 robot-free UI previews, tests and documentation. No Platform subscription.
 
-PR #9 (current software PR 5/5 of the Puppeteer integration): connect
-one authorized LiveKit room to the merged Puppeteer PR #13 native SDK
-three-performer semantic ensemble. No new LLM, provider or physical motion
-authority; no measured voice timing or hardware qualification. Exact
-migration of legacy stock 4G prompts/business tools is separate.
+PR #9 (merged): initial signed LiveKit room with one Puppeteer
+semantic ensemble MCP child. Later merged PRs extended v2 Reachy-only,
+v3 Reachy+StackChan, playback presence, and generated-PCM envelopes.
+
+Puppeteer PR #40 (merged into Puppeteer main at
+`979da719834b1e04641097555eb017c40d55f011`):
+independently selectable opt-in native/smoothed idle and speaking profiles,
+existing SDK-only execution, stale feature and unknown STOP quarantine,
+CI regression coverage. Hardware remains unqualified.
+
+Conversationalist PR #31 (this dependent software PR): operator
+profile preflight, exact startup behavior catalog, high-priority barge-in,
+single room-owned MCP child, bounded disconnect outcome, signed owner
+departure, no automatic neutral/sleep/rearm, simulation tests and docs.
+No physical or local-speaker acceptance is claimed by this PR.
+
+Exact migration of stock 4G business prompts/tools remains separate.
 
 Future coherent changes after PR #3:
 - Authorized consumer adapter for Platform's future communications bus.
@@ -24,8 +36,8 @@ Future coherent changes after PR #3:
   user preferences are **Platform responsibilities**, not new runtime code here.
 - Canonical presentation emitter integration with LiveKit browser clients and
   other registered endpoints with verified message origin.
-- Optional Puppeteer-approved indicator and expressive device renderers,
-  after its independent talking/idle and SDK work is integrated.
+- Additional Puppeteer-approved indicator and expressive device renderers
+  only after physical review; current software profiles are opt-in.
 - Full Hermes interactive session continuity and multiple participants/
   input arbitration, separately qualified.
 - Cross-agent operational observability through Platform OpenTelemetry. Add

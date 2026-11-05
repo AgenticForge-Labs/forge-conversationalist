@@ -33,6 +33,7 @@ from .mail_stream_notifications import AmbientMailNotifications, load_mail_strea
 from .personality import DEFAULT, Personality, load_personality
 from .playback_presence import PlaybackPresence
 from .robot_rpc import register_robot_rpc
+from .room_lifecycle import install_ensemble_room_shutdown_hooks
 from .speech_catalog import selected_speech_model
 from .speech_envelope_tap import agent_class_with_speech_envelope
 from .text_hook import install_assistant_text_hook, install_session_state_hook
@@ -378,12 +379,17 @@ async def entrypoint(ctx: object) -> None:
         # stream is moved to a robot by this step.
         try:
             await ensemble.start()
+            install_ensemble_room_shutdown_hooks(
+                ctx.room, ensemble, authorized_identity=authorized_identity,
+            )
         except Exception:
             logger.exception("Puppeteer ensemble unavailable; continuing without robot tools")
             agent_integrations = replace(agent_integrations, ensemble=None)
             ensemble = None
     # An opt-in TTS node observes generated PCM without changing LiveKit
-    # playback; missing Puppeteer support leaves the ordinary agent path.
+    # playback; Puppeteer may consume the validated features as SDK targets
+    # only when its separately reviewed motion profiles and grants opt in.
+    # Missing envelope support leaves the ordinary agent path.
     class _SpokenHermesNotifier:
         """Speak a finished Hermes result without being asked for status."""
 

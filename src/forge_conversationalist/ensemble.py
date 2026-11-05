@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -27,6 +28,11 @@ STATES = frozenset({"idle", "listening", "speaking"})
 # robot's fast stream cannot starve another's, and urgent presence keeps the
 # rest of the shared queue (102 of 128 entries) for STOP.
 SPEECH_ENVELOPE_MAX_QUEUE = 12
+MCP_EVENT_TIMEOUT_S = 15.0
+SHUTDOWN_ACK_TIMEOUT_S = 8.0
+# An optional feature observation must never monopolize the one room MCP
+# pipe while a live user can interrupt speech and require Puppeteer's STOP.
+MCP_ENVELOPE_TIMEOUT_S = 0.35
 
 
 def _presence_timing_fields(args: dict) -> dict[str, object]:
@@ -48,6 +54,9 @@ class PuppeteerEnsembleConfig:
     config_path: Path
     command: str = "forge-puppeteer-ensemble"
     performer_ids: tuple[str, ...] = field(init=False)
+    schema_version: int = field(init=False)
+    motion_profiles: dict[str, dict[str, str]] = field(init=False)
+    speech_driven_performers: tuple[str, ...] = field(init=False)
     digest: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -113,16 +122,125 @@ class PuppeteerEnsembleConfig:
                 raise ValueError(f"Puppeteer ensemble requires absolute {name}")
         if Path(data["action_journal"]).resolve() == Path(data["ownership_db"]).resolve():
             raise ValueError("Puppeteer action journal and ownership state must be distinct")
-        # All detailed hardware policy, SHA revision, calibration, servo limits,
-        # grants and preflight remain strictly enforced by the Puppeteer
-        # launcher and SDK at startup and at every native motion dispatch.
+        # Perform the no-I/O part of PR1's explicit profile admission again
+        # at the worker boundary. Actual SDK capability/geometry validation
+        # remains authoritative only in the Puppeteer launcher.
+        profiles = data.get("motion_profiles", {})
+        driven = data.get("speech_driven_performers", [])
+        if not isinstance(profiles, dict) or not isinstance(driven, (list, tuple)):
+            raise TypeError("motion profiles and speech performers must be explicit mappings")
+        if any(not isinstance(x, str) or x not in ids for x in driven):
+            raise ValueError("speech-driven performer identities must be selected")
+        if len(set(driven)) != len(driven):
+            raise ValueError("speech-driven performer identities must be unique")
+        if set(driven) - {reachy.get("instance_id"), (
+            stackchan.get("instance_id") if isinstance(stackchan, dict) else None
+        )}:
+            raise ValueError("SO-ARM is not approved for speech-reactive streaming")
+        reviewed: dict[str, dict[str, str]] = {}
+        for performer, choice in profiles.items():
+            if performer not in ids or not isinstance(choice, dict) or set(choice) - {"idle", "speaking"}:
+                raise ValueError("motion profile references an unsupported performer or field")
+            idle = choice.get("idle", "legacy")
+            speaking = choice.get("speaking", "legacy")
+            if not isinstance(idle, str) or not isinstance(speaking, str) or (
+                idle not in {"legacy", "native_v1", "smooth_v2"} or
+                speaking not in {"legacy", "native_v1", "smooth_v2"}
+            ):
+                raise ValueError("unknown Puppeteer motion profile")
+            if performer == (arm.get("instance_id") if isinstance(arm, dict) else None) and (
+                idle != "legacy" or speaking != "legacy"
+            ):
+                raise ValueError("SO-ARM only permits approved finite legacy choreography")
+            if performer == reachy.get("instance_id") and (
+                idle != "legacy" or speaking != "legacy"
+            ):
+                grants = reachy.get("allowed_tools", [])
+                neutral = data.get("reachy_neutral_antennas_rad")
+                sway = data.get("reachy_antenna_sway_rad", 0.18)
+                if not isinstance(grants, list) or "pose_and_antennas" not in grants:
+                    raise ValueError("native Reachy profiles require pose_and_antennas grant")
+                if (
+                    not isinstance(neutral, (list, tuple)) or len(neutral) != 2
+                    or any(type(v) not in (int, float) or not math.isfinite(v) for v in neutral)
+                    or type(sway) not in (int, float) or not math.isfinite(sway)
+                    or sway < 0 or any(abs(v) + sway > math.pi / 2 for v in neutral)
+                ):
+                    raise ValueError("native Reachy requires bounded reviewed antenna neutral")
+            if speaking == "smooth_v2" and performer not in driven:
+                raise ValueError("smooth_v2 speaking requires explicit speech-driven performer")
+            reviewed[performer] = {"idle": idle, "speaking": speaking}
         object.__setattr__(self, "performer_ids", ids)
+        object.__setattr__(self, "schema_version", data["schema_version"])
+        object.__setattr__(self, "motion_profiles", reviewed)
+        object.__setattr__(self, "speech_driven_performers", tuple(driven))
         object.__setattr__(self, "digest", hashlib.sha256(source).hexdigest())
 
     def require_unchanged(self) -> None:
         """Fail before starting the child if an approved config changed on disk."""
         if hashlib.sha256(self.config_path.read_bytes()).hexdigest() != self.digest:
             raise PermissionError("Puppeteer ensemble operator config changed since validation")
+
+    def preflight(self) -> dict[str, object]:
+        """No SDK import, device connection, motion, or credential disclosure.
+
+        An operator-readable *configuration* check, never evidence that the
+        connected hardware has the expected firmware or is settled.
+        """
+        self.require_unchanged()
+        data = json.loads(self.config_path.read_text(encoding="utf-8"))
+        # Pure local file checks. No SDK/serial/daemon is imported or opened.
+        neutral_path = Path(data["reachy_neutral_head"])
+        if not neutral_path.is_file():
+            raise ValueError("operator-reviewed Reachy neutral file is missing")
+        try:
+            matrix = json.loads(neutral_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("operator-reviewed Reachy neutral file is invalid") from exc
+        if (
+            not isinstance(matrix, list) or len(matrix) != 4
+            or any(
+                not isinstance(row, list) or len(row) != 4
+                or any(type(value) not in (int, float) or not math.isfinite(value) for value in row)
+                for row in matrix
+            )
+            or matrix[3] != [0, 0, 0, 1]
+        ):
+            raise ValueError("Reachy neutral must be a finite affine 4x4 matrix")
+        reachy = data["reachy"]
+        if reachy.get("physical_authority") != "I_AUTHORIZE_REACHY_CONTROL" or not {
+            "head_pose", "play_move", "device_stop",
+        } <= set(reachy.get("allowed_tools", [])):
+            raise ValueError("Reachy SDK operator authority and core grants are required")
+        if "stackchan" in data:
+            stackchan = data["stackchan"]
+            if stackchan.get("physical_authority") != "I_AUTHORIZE_STACKCHAN_CONTROL" or not {
+                "head_move", "face_update", "device_stop",
+            } <= set(stackchan.get("allowed_tools", [])):
+                raise ValueError("StackChan SDK operator authority and core grants are required")
+        if "REVIEW_REQUIRED" in self.config_path.read_text(encoding="utf-8"):
+            raise ValueError("operator review placeholders remain in the native config")
+        return {
+            "schema": "forge.ensemble_preflight.v1",
+            "outcome": "static_config_valid",
+            "config_sha256": self.digest,
+            "schema_version": self.schema_version,
+            "performer_ids": list(self.performer_ids),
+            "motion_profiles": {
+                name: {
+                    "idle": self.motion_profiles.get(name, {}).get("idle", "legacy"),
+                    "speaking": self.motion_profiles.get(name, {}).get("speaking", "legacy"),
+                } for name in self.performer_ids
+            },
+            "speech_driven_performers": list(self.speech_driven_performers),
+            "sdk_connections_opened": False,
+            "physical_motion_dispatched": False,
+            "hardware_capabilities_verified": False,
+            "physical_neutral_verified": False,
+            "physical_stop_verified": False,
+            "physical_sleep_verified": False,
+            "acoustic_playout_measured": False,
+        }
 
 
 class EnsembleSession:
@@ -146,8 +264,13 @@ class EnsembleSession:
         self._closed = False
         self._outgoing_speech_envelope = outgoing_speech_envelope
         self._speech_capable = False
-        self._speech_drop_stream: str | None = None
         self._speech_offers = 0
+        self._active_speech_streams: dict[str, str] = {}
+        self._cancelled_speech_streams: set[str] = set()
+        self._motion_fenced = False
+        self._shutdown_result: dict[str, object] | None = None
+        self._requires_operator_reconciliation = False
+        self._close_lock = asyncio.Lock()
         # One optional envelope stream per performer. A performer's stream that
         # was dropped for backpressure stays dropped; it must never displace a
         # different performer's stream or the automatic presence sequence.
@@ -180,6 +303,62 @@ class EnsembleSession:
             if future is not None and not future.done():
                 future.set_exception(RuntimeError("Puppeteer ensemble queue overflow"))
 
+    def _enqueue_priority(
+        self, tool: str, args: dict, future: asyncio.Future | None = None,
+        *, interrupted: bool = False,
+    ) -> None:
+        """Urgent STOP/room transition overtakes queued optional features.
+
+        No private Queue internals, no second transport. Old semantic presence
+        is superseded before dispatch. Queued gestures on a true barge-in get
+        an explicit not-dispatched result; admitted actions still require
+        Puppeteer's STOP path and cannot be silently retried.
+        """
+        pending: list[tuple[str, dict, asyncio.Future | None]] = []
+        urgent_interrupts: list[tuple[str, dict, asyncio.Future | None]] = []
+        while True:
+            try:
+                queued_tool, queued_args, queued_future = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if tool == "_close" and queued_future is not None:
+                if not queued_future.done():
+                    queued_future.set_result({
+                        "outcome": "unknown", "reason": "room_shutdown",
+                        "retry_safe": False,
+                    })
+                continue
+            if queued_tool == "ensemble_speech_envelope":
+                for frame in queued_args.get("frames", ()):
+                    if isinstance(frame, dict) and isinstance(frame.get("stream_id"), str):
+                        self._cancelled_speech_streams.add(frame["stream_id"])
+                continue
+            if queued_tool == "ensemble_presence":
+                if (
+                    queued_args.get("interrupted") is True
+                    and not interrupted and tool != "_close"
+                ):
+                    # The next normal idle/listening callback must not erase
+                    # an unacknowledged barge-in STOP. Preserve the urgent
+                    # interruption before the newer state.
+                    urgent_interrupts.append(
+                        (queued_tool, queued_args, queued_future),
+                    )
+                continue  # older nonurgent presence is superseded
+            if queued_tool == "ensemble_expression" and interrupted:
+                if queued_future is not None and not queued_future.done():
+                    queued_future.set_result({
+                        "outcome": "denied", "reason": "interrupted_before_dispatch",
+                        "retry_safe": False,
+                    })
+                continue
+            pending.append((queued_tool, queued_args, queued_future))
+        for item in urgent_interrupts:
+            self._queue.put_nowait(item)
+        self._enqueue(tool, args, future)
+        for item in pending:
+            self._queue.put_nowait(item)
+
     def observe(
         self,
         state: Literal["idle", "listening", "speaking"],
@@ -190,17 +369,25 @@ class EnsembleSession:
         """Nonblocking semantic presence, with explicitly attributed timing."""
         if state not in STATES or source not in {"agent_state", "playback"}:
             raise ValueError("invalid ensemble presence or timing source")
-        if self._closed or self._task is None or self._task.done():
+        if (
+            self._closed or self._motion_fenced or self._task is None
+            or self._task.done()
+        ):
             return
         if interrupted or state != "speaking":
-            # A new stream must be explicitly created by the next TTS node.
-            # Any already queued feature batch is still preview-only; it can
-            # never bypass Puppeteer motion quarantine or trigger a motor.
-            self._speech_drop_stream = None
+            # Invalidate already offered features from the superseded TTS
+            # utterance, including batches that raced with a barge-in.
+            self._cancelled_speech_streams.update(self._active_speech_streams.values())
+            self._active_speech_streams.clear()
         self._last_state = state
         self._last_source = source
         args = self._presence(state, source=source, interrupted=interrupted)
-        self._enqueue("ensemble_presence", args)
+        if interrupted or state != "speaking":
+            self._enqueue_priority(
+                "ensemble_presence", args, interrupted=interrupted,
+            )
+        else:
+            self._enqueue("ensemble_presence", args)
         logger.info(
             "puppeteer_presence_enqueued",
             extra={
@@ -235,18 +422,32 @@ class EnsembleSession:
         """
         if (
             not self._outgoing_speech_envelope or not self._speech_capable
-            or self._closed or self._task is None or self._task.done()
+            or self._closed or self._motion_fenced
+            or self._task is None or self._task.done()
             or not isinstance(frames, list) or not 1 <= len(frames) <= 8
         ):
             return False
         stream_id = frames[0].get("stream_id") if isinstance(frames[0], dict) else None
-        if not isinstance(stream_id, str) or not stream_id:
+        if not isinstance(stream_id, str) or not stream_id or stream_id in self._cancelled_speech_streams:
             return False
         slot = performer_id if isinstance(performer_id, str) and performer_id else "unattributed"
         if slot != "unattributed" and slot not in self.config.performer_ids:
             return False
         if slot in self._speech_dropped_performers:
             return False
+        if any(
+            not isinstance(frame, dict)
+            or frame.get("stream_id") != stream_id
+            for frame in frames
+        ):
+            return False
+        previous_stream = self._active_speech_streams.get(slot)
+        if previous_stream is not None and previous_stream != stream_id:
+            # New utterance supersedes a previous one; the source must start
+            # from sequence zero, never silently continue a changed stream.
+            if frames[0].get("sequence") != 0:
+                return False
+            self._cancelled_speech_streams.add(previous_stream)
         pending = sum(
             1 for entry in list(self._queue._queue)
             if entry[0] == "ensemble_speech_envelope"
@@ -269,6 +470,7 @@ class EnsembleSession:
                 },
                 None,
             ))
+            self._active_speech_streams[slot] = stream_id
             self._speech_offers += 1
             offers = self._speech_offers_by_performer.get(slot, 0) + 1
             self._speech_offers_by_performer[slot] = offers
@@ -287,6 +489,8 @@ class EnsembleSession:
     async def start(self) -> dict:
         if self._task is not None:
             raise RuntimeError("ensemble room already started")
+        if self._requires_operator_reconciliation:
+            raise RuntimeError("prior Puppeteer STOP unresolved; operator reconciliation required")
         self.config.require_unchanged()
         loop = asyncio.get_running_loop()
         self._ready = loop.create_future()
@@ -305,6 +509,60 @@ class EnsembleSession:
         if response.is_error or not isinstance(response.structured_content, dict):
             raise RuntimeError("Puppeteer ensemble MCP result is unconfirmed")
         return response.structured_content
+
+    def _verify_startup_state(self, status: dict[str, object]) -> None:
+        """Fail before any room presence when SDK/Puppeteer catalog differs."""
+        performers = status.get("performers")
+        if (
+            status.get("schema") != SCHEMA
+            or status.get("session_id") is not None
+            or status.get("state") != "disconnected"
+            or not isinstance(performers, dict)
+            or set(performers) != set(self.config.performer_ids)
+        ):
+            raise RuntimeError("Puppeteer returned unexpected room or performer identities")
+        for detail in performers.values():
+            if not isinstance(detail, dict):
+                raise TypeError("Puppeteer performer capability details unavailable")
+            # Existing synthetic servers can be deliberately minimal; any
+            # advertised revision/behavior list must still be well-formed.
+            revision = detail.get("behavior_revision")
+            if (
+                not isinstance(revision, str) or not revision.startswith("sha256:")
+                or len(revision) != 71
+                or any(c not in "0123456789abcdef" for c in revision[7:])
+            ):
+                raise RuntimeError("Puppeteer performer revision invalid")
+            expressions = detail.get("expressions")
+            if not isinstance(expressions, list) or any(
+                not isinstance(item, str) for item in expressions
+            ):
+                raise RuntimeError("Puppeteer expression catalog unavailable")
+            states = detail.get("presence_behaviors")
+            if (
+                not isinstance(states, list)
+                or any(item not in STATES for item in states)
+                or len(states) != len(set(states))
+            ):
+                raise RuntimeError("Puppeteer presence catalog invalid")
+            kinds = detail.get("expression_kinds")
+            if kinds is not None and (
+                not isinstance(kinds, dict)
+                or set(kinds) - set(expressions)
+                or any(value not in {"recorded", "authored"} for value in kinds.values())
+            ):
+                raise RuntimeError("Puppeteer expression source catalog invalid")
+            if detail.get("status") != "idle":
+                raise RuntimeError("Puppeteer performer is not ready at room startup")
+        logger.info(
+            "Puppeteer native ensemble software readiness verified",
+            extra={
+                "session_id": self.room_id, "performers": sorted(performers),
+                "config_sha256": self.config.digest,
+                "physical_neutral_verified": False,
+                "physical_settling_verified": False,
+            },
+        )
 
     async def _serve(self) -> None:
         phase = "import"
@@ -338,13 +596,7 @@ class EnsembleSession:
                 elif self._speech_capable:
                     logger.info("Puppeteer accepted the optional speech envelope channel")
                 status = await self._call(session, "ensemble_state", {})
-                if (
-                    status.get("schema") != SCHEMA
-                    or status.get("session_id") is not None
-                    or status.get("state") != "disconnected"
-                    or set(status.get("performers", {})) != set(self.config.performer_ids)
-                ):
-                    raise RuntimeError("Puppeteer returned unexpected room or performer identities")
+                self._verify_startup_state(status)
                 phase = "room_events"
                 if self._ready is not None and not self._ready.done():
                     self._ready.set_result(status)
@@ -352,7 +604,7 @@ class EnsembleSession:
                     try:
                         tool, args, future = await asyncio.wait_for(self._queue.get(), timeout=10)
                     except TimeoutError:
-                        if not self._closed and self._last_state is not None:
+                        if not self._closed and not self._motion_fenced and self._last_state is not None:
                             tool = "ensemble_presence"
                             args = self._presence(self._last_state, source=self._last_source)
                             future = None
@@ -360,13 +612,40 @@ class EnsembleSession:
                             continue
                     if tool == "_close":
                         try:
-                            await self._call(session, "ensemble_presence", self._presence("disconnected"))
-                        except Exception:  # noqa: BLE001 - never infer physical STOP on MCP error
+                            value = await asyncio.wait_for(
+                                self._call(
+                                    session, "ensemble_presence",
+                                    self._presence("disconnected"),
+                                ),
+                                timeout=SHUTDOWN_ACK_TIMEOUT_S,
+                            )
+                            if future is not None and not future.done():
+                                future.set_result(value)
+                        except Exception:  # noqa: BLE001 - physical STOP may be unknown
                             logger.warning("Puppeteer ensemble disconnect outcome unconfirmed")
-                        if future is not None and not future.done():
-                            future.set_result({})
+                            if future is not None and not future.done():
+                                future.set_result({
+                                    "outcome": "unknown", "reason": "disconnect_unconfirmed",
+                                })
+                        # An acknowledged disconnection ends this child; any
+                        # queued requests are no longer actionable.
+                        while not self._queue.empty():
+                            _, _, pending_future = self._queue.get_nowait()
+                            if pending_future is not None and not pending_future.done():
+                                pending_future.set_result({
+                                    "outcome": "unknown", "reason": "room_shutdown",
+                                    "retry_safe": False,
+                                })
                         break
-                    if tool == "ensemble_speech_envelope" and not self._speech_capable:
+                    if tool == "ensemble_speech_envelope" and (
+                        not self._speech_capable or self._motion_fenced
+                        or any(
+                            frame.get("stream_id") in self._cancelled_speech_streams
+                            for frame in args.get("frames", ()) if isinstance(frame, dict)
+                        )
+                    ):
+                        continue
+                    if tool == "ensemble_presence" and self._motion_fenced:
                         continue
                     # Per-performer gate: the slowest target decides the pacing,
                     # so only one envelope batch per performer may be in flight
@@ -390,7 +669,14 @@ class EnsembleSession:
                         }
                         logger.info("puppeteer_presence_call_started", extra=call_fields)
                     try:
-                        value = await self._call(session, tool, args)
+                        value = await asyncio.wait_for(
+                            self._call(session, tool, args),
+                            timeout=(
+                                MCP_ENVELOPE_TIMEOUT_S
+                                if tool == "ensemble_speech_envelope"
+                                else MCP_EVENT_TIMEOUT_S
+                            ),
+                        )
                         if is_presence:
                             logger.info(
                                 "puppeteer_presence_call_completed",
@@ -407,7 +693,11 @@ class EnsembleSession:
                             "accepted", "duplicate",
                         }:
                             logger.warning("Puppeteer ensemble presence denied: %s", value.get("reason"))
+                            self._motion_fenced = True
+                            self._requires_operator_reconciliation = True
                         elif tool == "ensemble_speech_envelope" and value.get("outcome") != "observed":
+                            if isinstance(envelope_performer, str):
+                                self._speech_dropped_performers.add(envelope_performer)
                             logger.warning("Optional speech envelope observation unconfirmed")
                     except Exception as exc:  # noqa: BLE001 - MCP transport exceptions are arbitrary
                         if is_presence:
@@ -424,6 +714,13 @@ class EnsembleSession:
                             future.set_exception(RuntimeError("Puppeteer outcome unconfirmed"))
                         else:
                             logger.warning("Puppeteer ensemble event unconfirmed: %s", type(exc).__name__)
+                        if tool == "ensemble_speech_envelope":
+                            if isinstance(envelope_performer, str):
+                                self._speech_dropped_performers.add(envelope_performer)
+                            logger.warning("Optional speech envelope timed out or failed; stream disabled")
+                        if tool in {"ensemble_presence", "ensemble_expression"}:
+                            self._motion_fenced = True
+                            self._requires_operator_reconciliation = True
                     finally:
                         if isinstance(envelope_performer, str):
                             self._envelope_in_flight = None
@@ -442,6 +739,8 @@ class EnsembleSession:
     async def _request(self, tool: str, args: dict) -> dict:
         if self._closed or self._task is None or self._task.done():
             return {"outcome": "failed", "reason": "ensemble_unavailable", "retry_safe": False}
+        if self._motion_fenced and tool != "ensemble_state":
+            return {"outcome": "denied", "reason": "operator_reconciliation_required", "retry_safe": False}
         future = asyncio.get_running_loop().create_future()
         self._enqueue(tool, args, future)
         try:
@@ -485,10 +784,19 @@ class EnsembleSession:
         Used by the operator's Connect/Disconnect controls: disconnecting frees
         the robots' serial/daemon resources without ending the voice room.
         """
-        await self.close()
+        result = await self.close()
+        if self._requires_operator_reconciliation or result.get("outcome") not in {
+            "acknowledged", "not_active",
+        }:
+            raise RuntimeError("Puppeteer STOP or disconnect not confirmed; do not rearm")
         self._task = None
         self._closed = False
         self._ready = None
+        self._motion_fenced = False
+        self._shutdown_result = None
+        self._speech_capable = False
+        self._active_speech_streams.clear()
+        self._cancelled_speech_streams.clear()
         while True:
             try:
                 self._queue.get_nowait()
@@ -496,31 +804,86 @@ class EnsembleSession:
                 break
         return await self.start()
 
-    async def close(self) -> None:
-        if self._task is None:
-            return
-        # Leave the robots resting rather than frozen on the last speaking
-        # frame: StackChan holds its mouth weight, Reachy holds its last pose.
-        if not self._closed and not self._task.done() and getattr(self, "_session", None) is not None:
+    def shutdown_evidence(self) -> dict[str, object] | None:
+        """Latest immutable-by-copy software-only room-close evidence."""
+        return dict(self._shutdown_result) if self._shutdown_result is not None else None
+
+    async def close(self) -> dict[str, object]:
+        async with self._close_lock:
+            return await self._close_once()
+
+    async def _close_once(self) -> dict[str, object]:
+        """Bounded room shutdown via Puppeteer's own STOP/ownership lifecycle.
+
+        Never issue an implicit neutral/recording/wake/sleep after an unknown
+        action. A room disconnect acknowledgement does not establish physical
+        pose, torque state, neutral convergence or motor settling. Puppeteer
+        PR #20 remains independently hardware-gated.
+        """
+        if self._shutdown_result is not None:
+            return dict(self._shutdown_result)
+
+        outcome = "not_active" if self._task is None else "unknown"
+        per_robot: dict[str, str] = {}
+        if self._task is not None and not self._task.done() and not self._closed:
+            self._closed = True
+            self._motion_fenced = True
+            self._cancelled_speech_streams.update(self._active_speech_streams.values())
+            future = asyncio.get_running_loop().create_future()
+            self._enqueue_priority("_close", {}, future, interrupted=True)
+            try:
+                response = await asyncio.wait_for(future, timeout=SHUTDOWN_ACK_TIMEOUT_S + 1)
+                statuses = response.get("performers")
+                if isinstance(statuses, dict):
+                    per_robot = {
+                        name: str(statuses[name].get("status", "unknown"))
+                        for name in self.config.performer_ids
+                        if isinstance(statuses.get(name), dict)
+                    }
+                if response.get("outcome") == "accepted" and (
+                    set(per_robot) == set(self.config.performer_ids)
+                    and all(status == "idle" for status in per_robot.values())
+                ):
+                    outcome = "acknowledged"
+                elif response.get("outcome") == "no_session":
+                    outcome = "not_active"
+                else:
+                    outcome = "unknown"
+            except (RuntimeError, TimeoutError, asyncio.CancelledError):
+                logger.warning("Puppeteer disconnect cannot confirm STOP outcome")
+                outcome = "unknown"
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+        if self._task is not None:
             try:
                 await asyncio.wait_for(
-                    self._request("ensemble_expression", {
-                        "expression": "neutral",
-                        "action_id": f"room-close-{uuid.uuid4().hex}",
-                        "performer_ids": list(self.config.performer_ids),
-                    }),
-                    timeout=3,
+                    asyncio.gather(self._task, return_exceptions=True), timeout=3,
                 )
-            except (RuntimeError, ValueError, TimeoutError):
-                logger.debug("resting pose on close unavailable")
-        if not self._task.done() and not self._closed:
-            self._closed = True
-            future = asyncio.get_running_loop().create_future()
-            self._enqueue("_close", {}, future)
-            try:
-                await asyncio.wait_for(future, timeout=5)
-            except (RuntimeError, TimeoutError):
-                logger.warning("Puppeteer ensemble disconnect confirmation unavailable")
-        if not self._task.done():
-            self._task.cancel()
-        await asyncio.gather(self._task, return_exceptions=True)
+            except TimeoutError:
+                logger.warning("Puppeteer MCP child close still unconfirmed")
+                outcome = "unknown"
+        if any(status in {"blocked", "unavailable", "unknown"} for status in per_robot.values()):
+            outcome = "unknown"
+        if outcome == "unknown":
+            self._requires_operator_reconciliation = True
+        self._shutdown_result = {
+            "schema": "forge.ensemble_shutdown.v1",
+            "outcome": outcome,
+            "performers": per_robot,
+            "sdk_stop_command": "puppeteer_owned_disconnect",
+            "neutral_request": "not_attempted",
+            "sleep_request": "not_attempted",
+            "physical_settling": "unconfirmed",
+            "physical_sleep_verified": False,
+            "retry_safe": False,
+        }
+        logger.info(
+            "puppeteer_room_shutdown_evidence",
+            extra={
+                "session_id": self.room_id,
+                "outcome": outcome,
+                "performers": per_robot,
+                "physical_settling": "unconfirmed",
+            },
+        )
+        return dict(self._shutdown_result)
