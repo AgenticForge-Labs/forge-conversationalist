@@ -312,6 +312,7 @@ class EnsembleSession:
         Puppeteer's STOP path and cannot be silently retried.
         """
         pending: list[tuple[str, dict, asyncio.Future | None]] = []
+        urgent_interrupts: list[tuple[str, dict, asyncio.Future | None]] = []
         while True:
             try:
                 queued_tool, queued_args, queued_future = self._queue.get_nowait()
@@ -323,7 +324,17 @@ class EnsembleSession:
                         self._cancelled_speech_streams.add(frame["stream_id"])
                 continue
             if queued_tool == "ensemble_presence":
-                continue  # superseded by a later monotonic sequence
+                if (
+                    queued_args.get("interrupted") is True
+                    and not interrupted and tool != "_close"
+                ):
+                    # The next normal idle/listening callback must not erase
+                    # an unacknowledged barge-in STOP. Preserve the urgent
+                    # interruption before the newer state.
+                    urgent_interrupts.append(
+                        (queued_tool, queued_args, queued_future),
+                    )
+                continue  # older nonurgent presence is superseded
             if queued_tool == "ensemble_expression" and interrupted:
                 if queued_future is not None and not queued_future.done():
                     queued_future.set_result({
@@ -332,6 +343,8 @@ class EnsembleSession:
                     })
                 continue
             pending.append((queued_tool, queued_args, queued_future))
+        for item in urgent_interrupts:
+            self._queue.put_nowait(item)
         self._enqueue(tool, args, future)
         for item in pending:
             self._queue.put_nowait(item)
