@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 SCHEMA = "forge.behavior.v1"
 TOOLS = frozenset({"ensemble_state", "ensemble_presence", "ensemble_expression"})
 STATES = frozenset({"idle", "listening", "speaking"})
+# Each performer may hold at most this many pending envelope batches, so one
+# robot's fast stream cannot starve another's, and urgent presence keeps the
+# rest of the shared queue (102 of 128 entries) for STOP.
+SPEECH_ENVELOPE_MAX_QUEUE = 12
 
 
 def _presence_timing_fields(args: dict) -> dict[str, object]:
@@ -144,6 +148,14 @@ class EnsembleSession:
         self._speech_capable = False
         self._speech_drop_stream: str | None = None
         self._speech_offers = 0
+        # One optional envelope stream per performer. A performer's stream that
+        # was dropped for backpressure stays dropped; it must never displace a
+        # different performer's stream or the automatic presence sequence.
+        self._speech_dropped_performers: set[str] = set()
+        self._speech_offers_by_performer: dict[str, int] = {}
+        # Exactly one optional envelope batch may be in flight on the shared
+        # runtime; it names the performer holding it.
+        self._envelope_in_flight: str | None = None
 
     def _presence(self, state: str, *, source: Literal["agent_state", "playback"] = "agent_state",
                   interrupted: bool = False) -> dict:
@@ -200,12 +212,26 @@ class EnsembleSession:
         )
 
 
-    def offer_speech_envelope(self, frames: list[dict[str, object]]) -> bool:
+    def offer_speech_envelope(
+        self, frames: list[dict[str, object]], *, performer_id: str | None = None,
+    ) -> bool:
         """Best-effort feature-only path; it NEVER blocks or disables a voice room.
 
         Admission merely enqueues generated-PCM observations to the same
         room-owned MCP child. A failed batch disables observation for that
         synthesized stream; no skipped sequence is ever silently repaired.
+
+        Gating decision for the two-performer case: the shared 300 ms runtime is
+        serialized by one queue, so Reachy's 50 ms and StackChan's 2 s speech
+        targets contend rather than interleave. An optional envelope batch may
+        therefore only enter when the queue is empty enough to guarantee the
+        next urgent presence event keeps its slot. Each performer holds at most
+        one pending envelope batch, so a slower performer cannot starve a
+        faster one or delay STOP. A performer dropped for backpressure stays
+        dropped for the rest of the room; it is never silently repaired or
+        retried. ``performer_id`` attributes the stream for that gate and for
+        honest logging; ``None`` means an unattributed stream that shares the
+        single "unattributed" slot.
         """
         if (
             not self._outgoing_speech_envelope or not self._speech_capable
@@ -213,29 +239,48 @@ class EnsembleSession:
             or not isinstance(frames, list) or not 1 <= len(frames) <= 8
         ):
             return False
-        if self._speech_offers == 0:
-            # One line proves the opt-in path is live, without per-hop noise.
-            logger.info("Outgoing speech envelope reached the robot room")
         stream_id = frames[0].get("stream_id") if isinstance(frames[0], dict) else None
         if not isinstance(stream_id, str) or not stream_id:
             return False
-        if self._speech_drop_stream == stream_id:
+        slot = performer_id if isinstance(performer_id, str) and performer_id else "unattributed"
+        if slot != "unattributed" and slot not in self.config.performer_ids:
             return False
-        if self._queue.qsize() >= 24:
-            self._speech_drop_stream = stream_id
-            logger.warning("Optional speech envelope dropped under MCP queue backpressure")
+        if slot in self._speech_dropped_performers:
             return False
-        if self._speech_drop_stream != stream_id:
-            self._speech_drop_stream = None
+        pending = sum(
+            1 for entry in list(self._queue._queue)
+            if entry[0] == "ensemble_speech_envelope"
+            and entry[1].get("performer_id") == slot
+        )
+        if pending >= SPEECH_ENVELOPE_MAX_QUEUE:
+            self._speech_dropped_performers.add(slot)
+            logger.warning(
+                "Optional speech envelope dropped under MCP queue backpressure",
+                extra={"performer_id": slot},
+            )
+            return False
         try:
             self._queue.put_nowait((
                 "ensemble_speech_envelope",
-                {"session_id": self.room_id, "frames": frames},
+                {
+                    "session_id": self.room_id,
+                    "performer_id": slot,
+                    "frames": frames,
+                },
                 None,
             ))
             self._speech_offers += 1
+            offers = self._speech_offers_by_performer.get(slot, 0) + 1
+            self._speech_offers_by_performer[slot] = offers
+            if offers == 1:
+                # One line per performer proves the opt-in path is live
+                # without per-hop noise.
+                logger.info(
+                    "Outgoing speech envelope reached the robot room",
+                    extra={"performer_id": slot},
+                )
         except asyncio.QueueFull:
-            self._speech_drop_stream = stream_id
+            self._speech_dropped_performers.add(slot)
             return False
         return True
 
@@ -323,6 +368,18 @@ class EnsembleSession:
                         break
                     if tool == "ensemble_speech_envelope" and not self._speech_capable:
                         continue
+                    # Per-performer gate: the slowest target decides the pacing,
+                    # so only one envelope batch per performer may be in flight
+                    # on the shared runtime. Reachy's 50 ms and StackChan's 2 s
+                    # streams are serialized, never merged into one call.
+                    envelope_performer = args.get("performer_id") if tool == "ensemble_speech_envelope" else None
+                    if isinstance(envelope_performer, str):
+                        if self._envelope_in_flight is not None:
+                            logger.debug("Envelope batch deferred while another performer's is in flight")
+                            self._queue.put_nowait((tool, args, future))
+                            await asyncio.sleep(0)
+                            continue
+                        self._envelope_in_flight = envelope_performer
                     is_presence = tool == "ensemble_presence"
                     if is_presence:
                         call_fields = {
@@ -367,6 +424,9 @@ class EnsembleSession:
                             future.set_exception(RuntimeError("Puppeteer outcome unconfirmed"))
                         else:
                             logger.warning("Puppeteer ensemble event unconfirmed: %s", type(exc).__name__)
+                    finally:
+                        if isinstance(envelope_performer, str):
+                            self._envelope_in_flight = None
         except BaseException as exc:
             self._closed = True
             if self._ready is not None and not self._ready.done():

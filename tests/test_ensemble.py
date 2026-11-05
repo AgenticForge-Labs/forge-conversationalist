@@ -15,7 +15,11 @@ import pytest
 
 from forge_conversationalist.agent import _room_instructions
 from forge_conversationalist.assistant_tools import build_assistant_tools
-from forge_conversationalist.ensemble import EnsembleSession, PuppeteerEnsembleConfig
+from forge_conversationalist.ensemble import (
+    SPEECH_ENVELOPE_MAX_QUEUE,
+    EnsembleSession,
+    PuppeteerEnsembleConfig,
+)
 from forge_conversationalist.integrations import Integrations, load_integrations
 
 
@@ -290,7 +294,11 @@ def test_optional_outgoing_speech_features_use_existing_room_queue(tmp_path):
     assert room.offer_speech_envelope([packet]) is True
     tool, args, future = room._queue.get_nowait()
     assert tool == "ensemble_speech_envelope"
-    assert args == {"session_id": "room-1", "frames": [packet]}
+    # The batch carries the performer that owns the stream so the child can
+    # gate it; an unattributed stream shares one explicit slot.
+    assert args == {
+        "session_id": "room-1", "performer_id": "unattributed", "frames": [packet],
+    }
     assert future is None
     assert room._closed is False
 
@@ -307,23 +315,23 @@ def test_optional_audio_queue_backpressure_never_disables_conversation(tmp_path)
     )
     room._task = RunningTask()
     room._speech_capable = True
-    for index in range(24):
+    for index in range(SPEECH_ENVELOPE_MAX_QUEUE):
         assert room.offer_speech_envelope([{
             "stream_id": "tts-1", "sequence": index,
         }])
     assert room.offer_speech_envelope([{
-        "stream_id": "tts-1", "sequence": 24,
+        "stream_id": "tts-1", "sequence": SPEECH_ENVELOPE_MAX_QUEUE,
     }]) is False
     assert room._closed is False
-    assert room._queue.qsize() == 24
+    assert room._queue.qsize() == SPEECH_ENVELOPE_MAX_QUEUE
     assert room.offer_speech_envelope([{
-        "stream_id": "tts-1", "sequence": 25,
+        "stream_id": "tts-1", "sequence": SPEECH_ENVELOPE_MAX_QUEUE + 1,
     }]) is False
     # Even when the stream is dropped, urgent presence retains space in
     # the same queue. Optional features never create a parallel MCP child.
     room.observe("listening", interrupted=True)
     assert room._closed is False
-    assert room._queue.qsize() == 25
+    assert room._queue.qsize() == SPEECH_ENVELOPE_MAX_QUEUE + 1
 
 
 def test_audio_ingress_is_inert_without_capability_and_explicit_opt_in(tmp_path):
@@ -441,3 +449,88 @@ async def test_duo_real_stdio_child_requires_exact_catalog(
             assert (await room.status())["state"] == "disconnected"
     finally:
         await room.close()
+
+
+class _RunningTask:
+    """Stands in for the live MCP serve task in queue-level tests."""
+
+    def done(self):
+        return False
+
+
+def _duo_room(tmp_path, **kwargs):
+    room = EnsembleSession(
+        PuppeteerEnsembleConfig(operator_file(tmp_path)),
+        room_id="room-duo", caller_id="authorized",
+        outgoing_speech_envelope=True,
+    )
+    room._task = _RunningTask()
+    room._speech_capable = True
+    return room
+
+
+def _hop(stream: str, sequence: int) -> dict:
+    return {
+        "schema": "forge.speech_envelope.v1", "stream_id": stream,
+        "sequence": sequence, "offset_ms": sequence * 50, "duration_ms": 50,
+        "active": True, "intensity": 0.5, "rms_dbfs": -20.0,
+        "timing_source": "generated_pcm", "acoustic_playout_milliseconds": 0,
+        "acoustic_playout_measured": False,
+    }
+
+
+def test_envelope_batches_are_attributed_per_performer(tmp_path):
+    """Reachy (50 ms) and StackChan (2 s) streams stay distinguishable."""
+    room = _duo_room(tmp_path)
+    assert room.offer_speech_envelope([_hop("tts-a", 0)], performer_id="reachy")
+    assert room.offer_speech_envelope([_hop("tts-b", 0)], performer_id="stackchan")
+    queued = [room._queue.get_nowait() for _ in range(2)]
+    assert [args["performer_id"] for _, args, _ in queued] == ["reachy", "stackchan"]
+    # The shared runtime is serialized by construction: one queue, ordered.
+    assert all(tool == "ensemble_speech_envelope" for tool, _, _ in queued)
+
+
+def test_one_performer_backpressure_does_not_drop_the_other(tmp_path):
+    """A starved fast stream must not silence the slow performer."""
+    room = _duo_room(tmp_path)
+    for index in range(SPEECH_ENVELOPE_MAX_QUEUE):
+        assert room.offer_speech_envelope([_hop("tts-a", index)], performer_id="reachy")
+    # Reachy's next batch is dropped and Reachy alone is fenced.
+    assert room.offer_speech_envelope(
+        [_hop("tts-a", SPEECH_ENVELOPE_MAX_QUEUE)], performer_id="reachy",
+    ) is False
+    assert "reachy" in room._speech_dropped_performers
+    # StackChan still has its allocation.
+    assert room.offer_speech_envelope([_hop("tts-b", 0)], performer_id="stackchan")
+    assert "stackchan" not in room._speech_dropped_performers
+
+
+def test_dropped_performer_is_never_silently_repaired(tmp_path):
+    room = _duo_room(tmp_path)
+    for index in range(SPEECH_ENVELOPE_MAX_QUEUE):
+        room.offer_speech_envelope([_hop("tts-a", index)], performer_id="reachy")
+    assert room.offer_speech_envelope([_hop("tts-a", 99)], performer_id="reachy") is False
+    # Draining the queue must not re-arm a dropped stream.
+    while not room._queue.empty():
+        room._queue.get_nowait()
+    assert room.offer_speech_envelope([_hop("tts-a", 100)], performer_id="reachy") is False
+
+
+def test_unknown_performer_stream_is_refused(tmp_path):
+    room = _duo_room(tmp_path)
+    assert room.offer_speech_envelope([_hop("tts-x", 0)], performer_id="so101") is False
+    assert room._queue.empty()
+
+
+def test_urgent_presence_keeps_its_slot_behind_envelope_batches(tmp_path):
+    """Envelope work can never delay a STOP."""
+    room = _duo_room(tmp_path)
+    for index in range(SPEECH_ENVELOPE_MAX_QUEUE):
+        room.offer_speech_envelope([_hop("tts-a", index)], performer_id="reachy")
+    room.observe("listening", interrupted=True)
+    tools = []
+    while not room._queue.empty():
+        tools.append(room._queue.get_nowait()[0])
+    assert "ensemble_presence" in tools
+    assert room._queue.qsize() == 0
+    assert room._closed is False
