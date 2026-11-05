@@ -193,9 +193,9 @@ export async function POST(request: NextRequest) {
   // The signed HttpOnly cookie binds an authenticated browser to its existing
   // room and identity. The browser never supplies a room or identity itself.
   const liveKit = new RoomServiceClient(liveKitHost(url), key, secret);
-  const binding = cookieAuthorized
-    ? decodeSessionBinding(request.cookies.get(SESSION_COOKIE)?.value ?? "", configured)
-    : undefined;
+  const binding = decodeSessionBinding(
+    request.cookies.get(SESSION_COOKIE)?.value ?? "", configured,
+  );
   let roomName = binding?.roomName;
   let identity = binding?.identity;
   let resumeExistingRoom = false;
@@ -251,7 +251,9 @@ export async function POST(request: NextRequest) {
     { token, roomName: sessionRoom, serverUrl: url, resumed: resumeExistingRoom },
     { headers: { "Cache-Control": "no-store" } },
   );
-  if (bearerAuthorized) {
+  if (bearerAuthorized || loopbackDevelopment) {
+    // Without this the browser never receives the access cookie in local
+    // development, so the next page load re-prompts for a token.
     response.cookies.set(ACCESS_COOKIE, configured, cookieOptions(request));
   }
   response.cookies.set(SESSION_COOKIE, encodeSessionBinding({ roomName: sessionRoom, identity: sessionIdentity }, configured), cookieOptions(request));
