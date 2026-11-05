@@ -146,9 +146,36 @@ def build_assistant_tools(
             Never infer motion completion or automatically retry.
             """
             result = await ensemble_session.express(name, performer_id)
-            if result.get("outcome") == "accepted":
-                result = {**result, "completion": "unconfirmed",
-                          "spoken_guidance": "The gesture was requested, not confirmed complete. Do not say it happened; check status or report that its outcome is unconfirmed."}
+            outcome = result.get("outcome")
+            if outcome == "accepted":
+                result = {
+                    **result,
+                    "completion": "unconfirmed",
+                    "spoken_guidance": (
+                        f"{name} was requested for {performer_id}. It is not "
+                        "confirmed complete; say it was requested, never that "
+                        "it happened."
+                    ),
+                }
+            elif outcome == "unsupported":
+                # Say plainly that the gesture does not exist here; do not
+                # imply a request was made.
+                result = {
+                    **result,
+                    "spoken_guidance": (
+                        f"{performer_id} does not offer {name}. Tell the user "
+                        "that gesture is unavailable there and offer one from "
+                        "get_ensemble_status instead."
+                    ),
+                }
+            elif outcome == "denied":
+                result = {
+                    **result,
+                    "spoken_guidance": (
+                        f"{performer_id} is unavailable right now ({result.get('reason')}). "
+                        "Report that, and do not retry automatically."
+                    ),
+                }
             return json.dumps(result)
 
         tools.extend([
