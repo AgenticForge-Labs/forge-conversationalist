@@ -125,3 +125,40 @@ def test_sink_must_be_callable():
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+def test_tap_emits_wire_hops_for_synthesized_frames():
+    """The opt-in tap must actually produce envelope hops from TTS frames."""
+    import asyncio
+
+    from forge_conversationalist.speech_envelope_tap import observe_synthesized_audio
+
+    class Frame:
+        def __init__(self, data):
+            self.data, self.sample_rate, self.num_channels = data, 24000, 1
+
+    async def frames():
+        for _ in range(12):
+            yield Frame(b"\x10\x20" * 1200)  # 50 ms of 24 kHz mono
+
+    batches = []
+
+    def sink(batch):
+        batches.append(batch)
+        return True
+
+    async def run():
+        seen = [f async for f in observe_synthesized_audio(
+            frames(), sink, stream_id="test-stream",
+        )]
+        return seen
+
+    seen = asyncio.run(run())
+    assert len(seen) == 12, "every audio frame must pass through unchanged"
+    hops = [hop for batch in batches for hop in batch]
+    assert hops, "the tap produced no envelope hops"
+    assert hops[0]["schema"] == "forge.speech_envelope.v1"
+    assert hops[0]["stream_id"] == "test-stream"
+    assert [h["sequence"] for h in hops] == list(range(len(hops)))
+    assert all(h["timing_source"] == "generated_pcm" for h in hops)
+    assert all(h["acoustic_playout_measured"] is False for h in hops)
