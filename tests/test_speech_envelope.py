@@ -84,3 +84,26 @@ def test_stream_id_is_required_and_bounded():
         hop.as_wire(stream_id="")
     with pytest.raises(ValueError):
         hop.as_wire(stream_id="x" * 129)
+
+
+def test_envelope_reaches_every_performer_not_just_the_first():
+    """`any(...)` short-circuited, so only the first robot ever got targets."""
+    from forge_conversationalist.agent import _offer_to_all
+
+    class FakeEnsemble:
+        def __init__(self):
+            self.config = type(
+                "Config", (), {"performer_ids": ("reachy", "stackchan")},
+            )()
+            self.seen = []
+
+        def offer_speech_envelope(self, frames, performer_id=None):
+            self.seen.append(performer_id)
+            # The first performer accepts; the second must still be offered.
+            return performer_id == "reachy"
+
+    ensemble = FakeEnsemble()
+    assert _offer_to_all(ensemble, [{"stream_id": "s", "sequence": 0}]) is True
+    assert ensemble.seen == ["reachy", "stackchan"], (
+        "a batch must be offered to every performer, not stopped at the first"
+    )
