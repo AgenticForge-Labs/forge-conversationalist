@@ -243,24 +243,26 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(
     finally:
         await room.close()
     logged = [json.loads(line) for line in events.read_text().splitlines()]
-    assert [e["kind"] for e in logged] == [
-        "presence", "presence", "presence", "expression", "presence",
-    ]
+    # Rapid intermediate presence may be coalesced by urgent interruption:
+    # no queued speaking cue may jump ahead of the latest barge-in.
+    assert logged[-1]["kind"] == "presence"
+    assert logged[-1]["value"]["state"] == "disconnected"
+    assert "expression" in [e["kind"] for e in logged]
     assert [e["value"]["performer_ids"] for e in logged if e["kind"] == "expression"] == [["reachy"]]
     presence = [e["value"] for e in logged if e["kind"] == "presence"]
-    assert [x["state"] for x in presence] == ["listening", "speaking", "listening", "disconnected"]
-    assert [x["sequence"] for x in presence] == [0, 1, 2, 3]
-    assert [x["interrupted"] for x in presence] == [False, False, True, False]
-    assert [x["source"] for x in presence] == [
-        "agent_state", "playback", "playback", "agent_state",
-    ]
+    assert presence[-1]["state"] == "disconnected"
+    assert any(x["interrupted"] for x in presence[:-1])
+    assert [x["sequence"] for x in presence] == sorted(x["sequence"] for x in presence)
+    interrupted_index = next(i for i, x in enumerate(presence) if x["interrupted"])
+    assert all(x["state"] != "speaking" for x in presence[interrupted_index:])
+    assert all(x["source"] in {"agent_state", "playback"} for x in presence)
     assert all(not e["llm_env"] for e in logged)
     enqueued = [r for r in caplog.records if r.msg == "puppeteer_presence_enqueued"]
     calls = [r for r in caplog.records if r.msg == "puppeteer_presence_call_started"]
     acks = [r for r in caplog.records if r.msg == "puppeteer_presence_call_completed"]
     assert [r.sequence for r in enqueued] == [0, 1, 2]
-    assert [r.sequence for r in calls] == [0, 1, 2]
-    assert [r.sequence for r in acks] == [0, 1, 2]
+    assert [r.sequence for r in calls] == sorted(r.sequence for r in calls)
+    assert [r.sequence for r in acks] == [r.sequence for r in calls]
     assert all(r.session_id == "livekit-one-room" for r in enqueued + calls + acks)
     assert all(r.mcp_outcome == "accepted" for r in acks)
     assert all(r.call_started_at_monotonic_ns > 0 for r in calls)
@@ -331,7 +333,8 @@ def test_optional_audio_queue_backpressure_never_disables_conversation(tmp_path)
     # the same queue. Optional features never create a parallel MCP child.
     room.observe("listening", interrupted=True)
     assert room._closed is False
-    assert room._queue.qsize() == SPEECH_ENVELOPE_MAX_QUEUE + 1
+    assert room._queue.qsize() == 1  # optional batches discarded; urgent STOP first
+    assert room._queue.get_nowait()[0] == "ensemble_presence"
 
 
 def test_audio_ingress_is_inert_without_capability_and_explicit_opt_in(tmp_path):
