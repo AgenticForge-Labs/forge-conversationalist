@@ -58,7 +58,13 @@ Alternatively, run `.venv/bin/forge-conversationalist-audio --list-devices` and 
 
 ## Use with robots
 
-Puppeteer provides a shared [Model Context Protocol](https://modelcontextprotocol.io/) interface for supported robot capabilities and semantic expressions. Conversationalist is an optional voice client: it does not connect directly to motor drivers or establish hardware authority. Review [native ensemble deployment](docs/NATIVE_ENSEMBLE.md) and the device-specific Puppeteer documentation before enabling any physical performer.
+Puppeteer provides a shared [Model Context Protocol](https://modelcontextprotocol.io/) interface for supported robot capabilities and semantic expressions. Conversationalist is an optional voice client: it does not connect directly to motor drivers or establish hardware authority. Review [native ensemble deployment](docs/NATIVE_ENSEMBLE.md) and the device-specific Puppeteer documentation before enabling any physical performer. The operator can run a **nonmoving** static preflight before attaching robots:
+
+```bash
+python -m forge_conversationalist.ensemble_preflight --config /absolute/path/to/operator-approved-ensemble.json
+```
+
+A valid static preflight does not certify safe motion, neutral, STOP or sleep. PR 2 uses the single signed LiveKit room and Puppeteer MCP child for opt-in idle/speaking profiles, bounded generated-speech envelopes and a no-auto-rearm shutdown policy; physical qualification is separate.
 
 ## Project documentation
 
