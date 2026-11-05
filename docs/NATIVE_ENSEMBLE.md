@@ -4,8 +4,8 @@
 is **merged** into its `main` at
 `979da719834b1e04641097555eb017c40d55f011`.
 Conversationalist PR #31 is the dependent room-lifecycle and software
-preflight change. It must be merged separately; no unmerged branch behavior
-is part of the installed application.
+preflight change. Installation must use a verified merged GitHub `main` commit,
+not an unmerged feature branch.
 
 **Safety:** This is **software-only** integration. No sample, CI test,
 MCP acknowledgment or speaker-track callback establishes measured physical

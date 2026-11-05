@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -277,3 +279,127 @@ def test_playback_to_room_presence_preserves_interruption_provenance(tmp_path):
     assert queued[-1]["interrupted"] is True
     assert not any(x["state"] == "speaking" for x in queued)
     adapter.detach()
+
+
+
+@pytest.mark.anyio
+async def test_repeated_two_performer_real_stdio_fake_sessions_with_randomized_timing(
+    tmp_path, monkeypatch,
+):
+    """Run the real MCP transport with a fake SDK-free server three times.
+
+    Presence, optional PCM feature observation, gestures and disconnection
+    share one room child; repeated sessions never use a previous SDK owner.
+    No local serial, Pollen daemon, microphone or hardware process is opened.
+    """
+    pytest.importorskip("mcp")
+    path = operator_config(tmp_path)
+    log = tmp_path / "observed.jsonl"
+    server = tmp_path / "forge-puppeteer-ensemble"
+    server.write_text(
+        f"#!{sys.executable}\n"
+        "import asyncio, json, os\n"
+        "from pathlib import Path\n"
+        "from typing import TypedDict\n"
+        "from mcp.server import MCPServer\n"
+        "class State(TypedDict):\n"
+        "    schema: str\n"
+        "    session_id: str | None\n"
+        "    state: str\n"
+        "    performers: dict[str, dict]\n"
+        "class Receipt(TypedDict):\n"
+        "    outcome: str\n"
+        "    state: str\n"
+        "    performers: dict[str, dict]\n"
+        "class EnvelopeReceipt(TypedDict):\n"
+        "    outcome: str\n"
+        "    frames_accepted: int\n"
+        "app = MCPServer('synthetic-pr2-room')\n"
+        f"log = Path({str(log)!r})\n"
+        "performers = {\n"
+        "  'reachy': {'status':'idle','behavior_revision':'sha256:'+'a'*64,\n"
+        "             'expressions':['yes','no'],'presence_behaviors':['idle','listening','speaking']},\n"
+        "  'stackchan': {'status':'idle','behavior_revision':'sha256:'+'b'*64,\n"
+        "                'expressions':['yes','no'],'presence_behaviors':['idle','listening','speaking']},\n"
+        "}\n"
+        "def record(kind, **fields):\n"
+        "    with log.open('a') as f:\n"
+        "        f.write(json.dumps({'kind':kind, **fields,\n"
+        "         'leaked_key': 'OPENROUTER_API_KEY' in os.environ})+'\\n')\n"
+        "@app.tool()\n"
+        "async def ensemble_state() -> State:\n"
+        "    return {'schema':'forge.behavior.v1','session_id':None,\n"
+        "            'state':'disconnected','performers':performers}\n"
+        "@app.tool()\n"
+        "async def ensemble_presence(session_id: str, event_id: str, sequence: int,\n"
+        "    state: str, source: str='agent_state', interrupted: bool=False) -> Receipt:\n"
+        "    await asyncio.sleep(0.002*(sequence%4))\n"
+        "    record('presence', session=session_id, sequence=sequence,\n"
+        "           state=state, source=source, interrupted=interrupted)\n"
+        "    return {'outcome':'accepted','state':state,'performers':performers}\n"
+        "@app.tool()\n"
+        "async def ensemble_expression(expression: str, action_id: str,\n"
+        "    performer_ids: list[str] | None=None) -> Receipt:\n"
+        "    record('gesture', expression=expression, performers=performer_ids)\n"
+        "    return {'outcome':'accepted','state':'speaking','performers':performers}\n"
+        "@app.tool()\n"
+        "async def ensemble_speech_envelope(session_id: str, frames: list[dict[str, object]],\n"
+        "    performer_id: str | None=None) -> EnvelopeReceipt:\n"
+        "    record('pcm', performer=performer_id, count=len(frames), session=session_id)\n"
+        "    return {'outcome':'observed','frames_accepted':len(frames)}\n"
+        "app.run(transport='stdio')\n",
+        encoding="utf-8",
+    )
+    server.chmod(0o755)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "never-forward")
+    rng = random.Random(113)
+    for index in range(3):
+        room = EnsembleSession(
+            PuppeteerEnsembleConfig(path, command=str(server)),
+            room_id=f"signed-room-{index}", caller_id="verified-owner",
+            outgoing_speech_envelope=True,
+        )
+        state = await room.start()
+        assert set(state["performers"]) == {"reachy", "stackchan"}
+        assert room._speech_capable
+        try:
+            room.observe("listening")
+            room.observe("speaking", source="playback")
+            for sequence in range(3):
+                batch = [hop(f"utterance-{index}", sequence)]
+                assert room.offer_speech_envelope(
+                    batch, performer_id="reachy",
+                )
+                assert room.offer_speech_envelope(
+                    batch, performer_id="stackchan",
+                )
+                await asyncio.sleep(rng.uniform(0.005, 0.012))
+            assert (await room.express("yes", "reachy"))["outcome"] == "accepted"
+            # Request-state call drains all earlier optional PCM observations,
+            # unless a later urgent interrupt superseded them.
+            await room.status()
+            room.observe("listening", interrupted=True)
+            room.observe("idle")
+            await room.status()
+        finally:
+            end = await room.close()
+        assert end["outcome"] == "acknowledged"
+        assert end["neutral_request"] == "not_attempted"
+        assert end["physical_settling"] == "unconfirmed"
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert not any(item["leaked_key"] for item in entries)
+    assert len([item for item in entries if item["kind"] == "gesture"]) == 3
+    assert {item["performer"] for item in entries if item["kind"] == "pcm"} == {
+        "reachy", "stackchan",
+    }
+    for index in range(3):
+        events = [
+            item for item in entries
+            if item.get("kind") == "presence" and item["session"] == f"signed-room-{index}"
+        ]
+        assert events[-1]["state"] == "disconnected"
+        assert [e["sequence"] for e in events] == sorted(e["sequence"] for e in events)
+        assert any(e["interrupted"] for e in events)
+        assert not any(e["state"] == "speaking" for e in events[
+            next(i for i, item in enumerate(events) if item["interrupted"]):
+        ])
