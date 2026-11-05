@@ -121,6 +121,9 @@ def test_startup_contract_denies_wrong_catalog_and_blocked_robot(tmp_path):
     room._verify_startup_state(valid)
     for altered in (
         {**valid, "performers": {"reachy": dict(performer)}},
+        {**valid, "performers": {**valid["performers"], "stackchan": {
+            **performer, "status": "unknown",
+        }}},
         {**valid, "performers": {**valid["performers"], "reachy": {
             **performer, "behavior_revision": "invalid",
         }}},
@@ -422,3 +425,40 @@ def test_following_idle_never_erases_unacknowledged_interrupt(tmp_path):
     assert [x["state"] for x in pending] == ["listening", "idle"]
     assert [x["interrupted"] for x in pending] == [True, False]
     assert [x["sequence"] for x in pending] == [1, 2]
+
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("missing", [False, True])
+async def test_shutdown_without_complete_idle_performer_evidence_never_rearms(
+    tmp_path, missing,
+):
+    room = EnsembleSession(
+        PuppeteerEnsembleConfig(operator_config(tmp_path)),
+        room_id="room", caller_id="owner",
+    )
+
+    async def fake_server():
+        tool, _args, future = await room._queue.get()
+        assert tool == "_close"
+        assert future is not None
+        result = {
+            "outcome": "accepted",
+            "performers": {
+                "reachy": {"status": "idle"},
+                "stackchan": {"status": "idle"},
+            },
+        }
+        if missing:
+            result["performers"].pop("stackchan")
+        else:
+            result["performers"]["stackchan"]["status"] = "unknown"
+        future.set_result(result)
+
+    room._task = asyncio.create_task(fake_server())
+    outcome = await room.close()
+    assert outcome["outcome"] == "unknown"
+    assert outcome["retry_safe"] is False
+    assert outcome["physical_settling"] == "unconfirmed"
+    with pytest.raises(RuntimeError, match="rearm"):
+        await room.reconnect()
