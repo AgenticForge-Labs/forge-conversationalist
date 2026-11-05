@@ -143,6 +143,7 @@ class EnsembleSession:
         self._outgoing_speech_envelope = outgoing_speech_envelope
         self._speech_capable = False
         self._speech_drop_stream: str | None = None
+        self._speech_offers = 0
 
     def _presence(self, state: str, *, source: Literal["agent_state", "playback"] = "agent_state",
                   interrupted: bool = False) -> dict:
@@ -212,6 +213,9 @@ class EnsembleSession:
             or not isinstance(frames, list) or not 1 <= len(frames) <= 8
         ):
             return False
+        if self._speech_offers == 0:
+            # One line proves the opt-in path is live, without per-hop noise.
+            logger.info("Outgoing speech envelope reached the robot room")
         stream_id = frames[0].get("stream_id") if isinstance(frames[0], dict) else None
         if not isinstance(stream_id, str) or not stream_id:
             return False
@@ -229,6 +233,7 @@ class EnsembleSession:
                 {"session_id": self.room_id, "frames": frames},
                 None,
             ))
+            self._speech_offers += 1
         except asyncio.QueueFull:
             self._speech_drop_stream = stream_id
             return False
@@ -285,6 +290,8 @@ class EnsembleSession:
                 )
                 if self._outgoing_speech_envelope and not self._speech_capable:
                     logger.warning("Puppeteer does not support optional speech envelope; voice continues")
+                elif self._speech_capable:
+                    logger.info("Puppeteer accepted the optional speech envelope channel")
                 status = await self._call(session, "ensemble_state", {})
                 if (
                     status.get("schema") != SCHEMA
