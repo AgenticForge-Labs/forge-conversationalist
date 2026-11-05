@@ -30,6 +30,9 @@ STATES = frozenset({"idle", "listening", "speaking"})
 SPEECH_ENVELOPE_MAX_QUEUE = 12
 MCP_EVENT_TIMEOUT_S = 15.0
 SHUTDOWN_ACK_TIMEOUT_S = 8.0
+# An optional feature observation must never monopolize the one room MCP
+# pipe while a live user can interrupt speech and require Puppeteer's STOP.
+MCP_ENVELOPE_TIMEOUT_S = 0.35
 
 
 def _presence_timing_fields(args: dict) -> dict[str, object]:
@@ -542,8 +545,8 @@ class EnsembleSession:
                 or any(value not in {"recorded", "authored"} for value in kinds.values())
             ):
                 raise RuntimeError("Puppeteer expression source catalog invalid")
-            if detail.get("status") in {"blocked", "unavailable"}:
-                raise RuntimeError("Puppeteer performer requires operator review")
+            if detail.get("status") != "idle":
+                raise RuntimeError("Puppeteer performer is not ready at room startup")
         logger.info(
             "Puppeteer native ensemble software readiness verified",
             extra={
@@ -652,7 +655,11 @@ class EnsembleSession:
                     try:
                         value = await asyncio.wait_for(
                             self._call(session, tool, args),
-                            timeout=MCP_EVENT_TIMEOUT_S,
+                            timeout=(
+                                MCP_ENVELOPE_TIMEOUT_S
+                                if tool == "ensemble_speech_envelope"
+                                else MCP_EVENT_TIMEOUT_S
+                            ),
                         )
                         if is_presence:
                             logger.info(
@@ -673,6 +680,8 @@ class EnsembleSession:
                             self._motion_fenced = True
                             self._requires_operator_reconciliation = True
                         elif tool == "ensemble_speech_envelope" and value.get("outcome") != "observed":
+                            if isinstance(envelope_performer, str):
+                                self._speech_dropped_performers.add(envelope_performer)
                             logger.warning("Optional speech envelope observation unconfirmed")
                     except Exception as exc:  # noqa: BLE001 - MCP transport exceptions are arbitrary
                         if is_presence:
@@ -689,6 +698,10 @@ class EnsembleSession:
                             future.set_exception(RuntimeError("Puppeteer outcome unconfirmed"))
                         else:
                             logger.warning("Puppeteer ensemble event unconfirmed: %s", type(exc).__name__)
+                        if tool == "ensemble_speech_envelope":
+                            if isinstance(envelope_performer, str):
+                                self._speech_dropped_performers.add(envelope_performer)
+                            logger.warning("Optional speech envelope timed out or failed; stream disabled")
                         if tool in {"ensemble_presence", "ensemble_expression"}:
                             self._motion_fenced = True
                             self._requires_operator_reconciliation = True
@@ -811,11 +824,13 @@ class EnsembleSession:
                         for name in self.config.performer_ids
                         if isinstance(statuses.get(name), dict)
                     }
-                if response.get("outcome") in {"accepted", "no_session"}:
-                    outcome = (
-                        "acknowledged" if response.get("outcome") == "accepted"
-                        else "not_active"
-                    )
+                if response.get("outcome") == "accepted" and (
+                    set(per_robot) == set(self.config.performer_ids)
+                    and all(status == "idle" for status in per_robot.values())
+                ):
+                    outcome = "acknowledged"
+                elif response.get("outcome") == "no_session":
+                    outcome = "not_active"
                 else:
                     outcome = "unknown"
             except (RuntimeError, TimeoutError, asyncio.CancelledError):
