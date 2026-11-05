@@ -204,9 +204,15 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(
         "async def ensemble_state() -> State:\n"
         "    return {'schema':'forge.behavior.v1','session_id':None,\n"
         "       'state':'disconnected','performers':{\n"
-        "       'reachy':{'expressions':['yes','no','happy'],'status':'idle'},\n"
-        "       'stackchan':{'expressions':['yes'],'status':'idle'},\n"
-        "       'soarm101':{'expressions':['yes','no'],'status':'idle'}}}\n"
+        "       'reachy':{'expressions':['yes','no','happy'],'status':'idle',\n"
+        "          'behavior_revision':'sha256:'+'a'*64,\n"
+        "          'presence_behaviors':['idle','listening','speaking']},\n"
+        "       'stackchan':{'expressions':['yes'],'status':'idle',\n"
+        "          'behavior_revision':'sha256:'+'b'*64,\n"
+        "          'presence_behaviors':['idle','listening','speaking']},\n"
+        "       'soarm101':{'expressions':['yes','no'],'status':'idle',\n"
+        "          'behavior_revision':'sha256:'+'c'*64,\n"
+        "          'presence_behaviors':['idle','listening','speaking']}}}\n"
         "@app.tool()\n"
         "async def ensemble_presence(session_id: str, event_id: str,\n"
         "   sequence: int, state: str, source: str = 'agent_state',\n"
@@ -394,11 +400,19 @@ async def test_duo_real_stdio_child_requires_exact_catalog(
     config = duo_operator_file(tmp_path)
     script = tmp_path / "forge-puppeteer-ensemble"
     expected = {
-        "reachy": {"expressions": ["yes"]},
-        "stackchan": {"expressions": ["yes", "no"]},
+        "reachy": {"expressions": ["yes"], "status": "idle",
+                  "behavior_revision": "sha256:" + "a" * 64,
+                  "presence_behaviors": ["idle", "listening", "speaking"]},
+        "stackchan": {"expressions": ["yes", "no"], "status": "idle",
+                     "behavior_revision": "sha256:" + "b" * 64,
+                     "presence_behaviors": ["idle", "listening", "speaking"]},
     }
     if extra_unconfigured_performer:
-        expected["soarm101"] = {"expressions": ["yes"]}
+        expected["soarm101"] = {
+            "expressions": ["yes"], "status": "idle",
+            "behavior_revision": "sha256:" + "c" * 64,
+            "presence_behaviors": ["idle", "listening", "speaking"],
+        }
     # The child only emulates the documented MCP contract. No SDK import,
     # hardware port, connection or actual robot action is allowed.
     script.write_text(

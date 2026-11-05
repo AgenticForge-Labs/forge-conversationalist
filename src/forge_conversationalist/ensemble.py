@@ -126,8 +126,10 @@ class PuppeteerEnsembleConfig:
         driven = data.get("speech_driven_performers", [])
         if not isinstance(profiles, dict) or not isinstance(driven, (list, tuple)):
             raise TypeError("motion profiles and speech performers must be explicit mappings")
-        if any(not isinstance(x, str) or x not in ids for x in driven) or len(set(driven)) != len(driven):
-            raise ValueError("speech-driven performer identities must be unique and selected")
+        if any(not isinstance(x, str) or x not in ids for x in driven):
+            raise ValueError("speech-driven performer identities must be selected")
+        if len(set(driven)) != len(driven):
+            raise ValueError("speech-driven performer identities must be unique")
         if set(driven) - {reachy.get("instance_id"), (
             stackchan.get("instance_id") if isinstance(stackchan, dict) else None
         )}:
@@ -138,9 +140,10 @@ class PuppeteerEnsembleConfig:
                 raise ValueError("motion profile references an unsupported performer or field")
             idle = choice.get("idle", "legacy")
             speaking = choice.get("speaking", "legacy")
-            if idle not in {"legacy", "native_v1", "smooth_v2"} or speaking not in {
-                "legacy", "native_v1", "smooth_v2",
-            }:
+            if not isinstance(idle, str) or not isinstance(speaking, str) or (
+                idle not in {"legacy", "native_v1", "smooth_v2"} or
+                speaking not in {"legacy", "native_v1", "smooth_v2"}
+            ):
                 raise ValueError("unknown Puppeteer motion profile")
             if performer == (arm.get("instance_id") if isinstance(arm, dict) else None) and (
                 idle != "legacy" or speaking != "legacy"
@@ -182,6 +185,38 @@ class PuppeteerEnsembleConfig:
         connected hardware has the expected firmware or is settled.
         """
         self.require_unchanged()
+        data = json.loads(self.config_path.read_text(encoding="utf-8"))
+        # Pure local file checks. No SDK/serial/daemon is imported or opened.
+        neutral_path = Path(data["reachy_neutral_head"])
+        if not neutral_path.is_file():
+            raise ValueError("operator-reviewed Reachy neutral file is missing")
+        try:
+            matrix = json.loads(neutral_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("operator-reviewed Reachy neutral file is invalid") from exc
+        if (
+            not isinstance(matrix, list) or len(matrix) != 4
+            or any(
+                not isinstance(row, list) or len(row) != 4
+                or any(type(value) not in (int, float) or not math.isfinite(value) for value in row)
+                for row in matrix
+            )
+            or matrix[3] != [0, 0, 0, 1]
+        ):
+            raise ValueError("Reachy neutral must be a finite affine 4x4 matrix")
+        reachy = data["reachy"]
+        if reachy.get("physical_authority") != "I_AUTHORIZE_REACHY_CONTROL" or not {
+            "head_pose", "play_move", "device_stop",
+        } <= set(reachy.get("allowed_tools", [])):
+            raise ValueError("Reachy SDK operator authority and core grants are required")
+        if "stackchan" in data:
+            stackchan = data["stackchan"]
+            if stackchan.get("physical_authority") != "I_AUTHORIZE_STACKCHAN_CONTROL" or not {
+                "head_move", "face_update", "device_stop",
+            } <= set(stackchan.get("allowed_tools", [])):
+                raise ValueError("StackChan SDK operator authority and core grants are required")
+        if "REVIEW_REQUIRED" in self.config_path.read_text(encoding="utf-8"):
+            raise ValueError("operator review placeholders remain in the native config")
         return {
             "schema": "forge.ensemble_preflight.v1",
             "outcome": "static_config_valid",
@@ -469,7 +504,7 @@ class EnsembleSession:
             # Existing synthetic servers can be deliberately minimal; any
             # advertised revision/behavior list must still be well-formed.
             revision = detail.get("behavior_revision")
-            if revision is not None and (
+            if (
                 not isinstance(revision, str) or not revision.startswith("sha256:")
                 or len(revision) != 71
                 or any(c not in "0123456789abcdef" for c in revision[7:])
@@ -481,12 +516,19 @@ class EnsembleSession:
             ):
                 raise RuntimeError("Puppeteer expression catalog unavailable")
             states = detail.get("presence_behaviors")
-            if states is not None and (
+            if (
                 not isinstance(states, list)
                 or any(item not in STATES for item in states)
                 or len(states) != len(set(states))
             ):
                 raise RuntimeError("Puppeteer presence catalog invalid")
+            kinds = detail.get("expression_kinds")
+            if kinds is not None and (
+                not isinstance(kinds, dict)
+                or set(kinds) - set(expressions)
+                or any(value not in {"recorded", "authored"} for value in kinds.values())
+            ):
+                raise RuntimeError("Puppeteer expression source catalog invalid")
             if detail.get("status") in {"blocked", "unavailable"}:
                 raise RuntimeError("Puppeteer performer requires operator review")
         logger.info(
