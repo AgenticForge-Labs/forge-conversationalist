@@ -423,7 +423,13 @@ async def entrypoint(ctx: object) -> None:
 
     hermes_notifier = _SpokenHermesNotifier()
     agent_class = (
-        agent_class_with_speech_envelope(Agent, ensemble.offer_speech_envelope)
+        agent_class_with_speech_envelope(
+            Agent,
+            lambda frames: any(
+                ensemble.offer_speech_envelope(frames, performer_id=performer)
+                for performer in ensemble.config.performer_ids
+            ),
+        )
         if envelope_opt_in and ensemble is not None else Agent
     )
     agent = agent_class(
