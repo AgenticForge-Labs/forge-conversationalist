@@ -425,10 +425,7 @@ async def entrypoint(ctx: object) -> None:
     agent_class = (
         agent_class_with_speech_envelope(
             Agent,
-            lambda frames: any(
-                ensemble.offer_speech_envelope(frames, performer_id=performer)
-                for performer in ensemble.config.performer_ids
-            ),
+            lambda frames: _offer_to_all(ensemble, frames),
         )
         if envelope_opt_in and ensemble is not None else Agent
     )
@@ -510,6 +507,24 @@ async def entrypoint(ctx: object) -> None:
                 notifier = AmbientMailNotifications(mail_stream_config, allow_company=company_events)
                 notifier.start(session, ctx.room)
                 ctx.add_shutdown_callback(notifier.close)
+
+
+def _offer_to_all(ensemble: object, frames: list[dict[str, object]]) -> bool:
+    """Offer one envelope batch to *every* performer and report any success.
+
+    ``any(...)`` would short-circuit on the first performer, so only the first
+    configured robot ever received speech targets. Each performer is gated
+    independently, and one being dropped for backpressure must not silence
+    the others.
+    """
+    offer = getattr(ensemble, "offer_speech_envelope", None)
+    if offer is None:
+        return False
+    accepted = False
+    for performer in ensemble.config.performer_ids:  # type: ignore[attr-defined]
+        if offer(frames, performer_id=performer):
+            accepted = True
+    return accepted
 
 
 def _room_instructions(
