@@ -1,3 +1,5 @@
+![Ink illustration of a voice assistant interpreting context and coordinating expressions with Reachy Mini and StackChan](docs/images/conversationalist-header.webp)
+
 # Forge Conversationalist
 
 **Give an AI agent a voice—and, optionally, a physical presence.**
