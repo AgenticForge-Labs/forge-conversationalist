@@ -789,7 +789,7 @@ def _prewarm_job(_process: object) -> None:
         "mcp",
         "mcp_types",
         "openai",
-        "livekit.agents.mcp",
+        "livekit.agents.llm.mcp",
         "livekit.plugins.openai",
     ):
         try:
