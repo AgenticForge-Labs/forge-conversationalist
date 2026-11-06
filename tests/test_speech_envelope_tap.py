@@ -90,6 +90,37 @@ async def test_optional_sink_exception_does_not_interrupt_voice():
     assert observed == frames
 
 
+@pytest.mark.anyio
+async def test_native_gain_passes_audio_through_and_is_independent_of_generic_sink():
+    original = [frame(4), frame(4), frame(2)]
+    generic, native = [], []
+    output = [item async for item in observe_synthesized_audio(
+        source(original), lambda batch: generic.append(batch) or False,
+        stream_id="same-utterance", native_sink=lambda batch: native.append(batch) or True,
+    )]
+    assert all(a is b for a, b in zip(output, original, strict=True))
+    assert len(generic) == 1
+    assert [len(batch) for batch in native] == [1] * 10
+    hops = [hop for batch in native for hop in batch]
+    assert [hop["sequence"] for hop in hops] == list(range(10))
+    assert all(hop["schema"] == "forge.native_speech_gain.v1" for hop in hops)
+    assert all(hop["stream_id"] == "same-utterance" for hop in hops)
+    assert all("data" not in hop and "text" not in hop and "pose" not in hop for hop in hops)
+
+
+@pytest.mark.anyio
+async def test_rejected_native_gain_does_not_disable_generic_features():
+    original = [frame(4), frame(4)]
+    generic, native = [], []
+    output = [item async for item in observe_synthesized_audio(
+        source(original), lambda batch: generic.append(batch) or True,
+        stream_id="utterance", native_sink=lambda batch: native.append(batch) or False,
+    )]
+    assert output == original
+    assert len(native) == 1
+    assert len(generic) == 2
+
+
 class FakeAgent:
     class default:
         @staticmethod

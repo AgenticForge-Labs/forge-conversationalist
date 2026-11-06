@@ -329,6 +329,15 @@ async def entrypoint(ctx: object) -> None:
 
     envelope_opt_in = os.getenv("CONVERSATIONALIST_OUTGOING_SPEECH_ENVELOPE") == "1"
     ensemble = None
+    if agent_integrations.ensemble is not None and any(
+        choice.get("speaking") == "original_v1"
+        for choice in getattr(agent_integrations.ensemble, "motion_profiles", {}).values()
+    ):
+        # Output events do not identify the originating TTS stream. Until that
+        # association is verified, startup must not silently run an idle-only
+        # approximation while advertising original speech fidelity.
+        logger.warning("Original speech profile unavailable: TTS/output association unverified; voice continues")
+        agent_integrations = replace(agent_integrations, ensemble=None)
     if agent_integrations.ensemble is not None:
         ensemble = EnsembleSession(
             agent_integrations.ensemble,

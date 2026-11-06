@@ -85,6 +85,41 @@ def test_static_preflight_is_nonmoving_and_does_not_open_devices(tmp_path, capsy
         config.preflight()
 
 
+def test_original_idle_preflight_requires_grant_authority_and_original_neutral(tmp_path):
+    path = operator_config(tmp_path, duo=False,
+                           motion_profiles={"reachy": {"idle": "original_v1"}})
+    with pytest.raises(ValueError, match="original_idle grant"):
+        PuppeteerEnsembleConfig(path)
+    data = json.loads(path.read_text())
+    data["reachy"]["allowed_tools"].append("original_idle")
+    data["reachy_original_idle_authority"] = "I_AUTHORIZE_REACHY_ORIGINAL_IDLE"
+    path.write_text(json.dumps(data))
+    assert PuppeteerEnsembleConfig(path).preflight()["outcome"] == "static_config_valid"
+    neutral = tmp_path / "operator-neutral.json"
+    neutral.write_text(json.dumps([[1, 0, 0, 0.01], [0, 1, 0, 0],
+                                   [0, 0, 1, 0], [0, 0, 0, 1]]))
+    with pytest.raises(ValueError, match="identity neutral"):
+        PuppeteerEnsembleConfig(path).preflight()
+
+
+def test_original_speech_preflight_requires_separate_authority(tmp_path):
+    path = operator_config(tmp_path, duo=False, motion_profiles={
+        "reachy": {"idle": "original_v1", "speaking": "original_v1"},
+    })
+    data = json.loads(path.read_text())
+    data["reachy"]["allowed_tools"].append("original_idle")
+    data["reachy_original_idle_authority"] = "I_AUTHORIZE_REACHY_ORIGINAL_IDLE"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="original_speech grant"):
+        PuppeteerEnsembleConfig(path)
+    data["reachy"]["allowed_tools"].append("original_speech")
+    data["reachy_original_speech_authority"] = "I_AUTHORIZE_REACHY_ORIGINAL_SPEECH"
+    path.write_text(json.dumps(data))
+    report = PuppeteerEnsembleConfig(path).preflight()
+    assert report["motion_profiles"]["reachy"]["speaking"] == "original_v1"
+    assert report["physical_motion_dispatched"] is False
+
+
 @pytest.mark.parametrize("patch", [
     {"motion_profiles": {"unknown": {"idle": "native_v1"}}},
     {"motion_profiles": {"reachy": {"speaking": "magic"}}},

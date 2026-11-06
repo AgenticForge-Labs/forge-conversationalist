@@ -12,10 +12,12 @@ import logging
 import uuid
 from collections.abc import AsyncIterable, Callable
 
+from .native_speech_feature import NativeSpeechFeatureAnalyzer
 from .speech_envelope import SpeechEnvelopeAnalyzer
 
 logger = logging.getLogger(__name__)
 BATCH_HOPS = 4
+NATIVE_BATCH_HOPS = 1
 
 SpeechSink = Callable[[list[dict[str, object]]], bool]
 
@@ -25,6 +27,7 @@ async def observe_synthesized_audio(
     sink: SpeechSink,
     *,
     stream_id: str,
+    native_sink: SpeechSink | None = None,
 ) -> AsyncIterable[object]:
     """Pass frames through unchanged, offering at most four 50-ms hops per batch.
 
@@ -36,6 +39,9 @@ async def observe_synthesized_audio(
     analyzer: SpeechEnvelopeAnalyzer | None = None
     pending: list[dict[str, object]] = []
     observing = True
+    native_analyzer: NativeSpeechFeatureAnalyzer | None = None
+    native_pending: list[dict[str, object]] = []
+    native_observing = native_sink is not None
 
     def offer() -> bool:
         nonlocal pending
@@ -49,7 +55,35 @@ async def observe_synthesized_audio(
             logger.warning("Optional synthesized speech envelope sink failed")
             return False
 
+    def offer_native() -> bool:
+        nonlocal native_pending
+        if not native_pending:
+            return True
+        batch = native_pending
+        native_pending = []
+        try:
+            return native_sink is not None and native_sink(batch) is True
+        except Exception:  # noqa: BLE001 - optional observer cannot break voice
+            logger.warning("Optional native speech feature sink failed")
+            return False
+
     async for frame in frames:
+        if native_observing:
+            try:
+                if native_analyzer is None:
+                    native_analyzer = NativeSpeechFeatureAnalyzer(
+                        sample_rate=frame.sample_rate, channels=frame.num_channels,
+                    )
+                for hop in native_analyzer.feed_frame(frame):
+                    native_pending.append(hop.as_wire(stream_id=stream_id))
+                    if len(native_pending) == NATIVE_BATCH_HOPS and not offer_native():
+                        native_observing = False
+                        native_pending = []
+                        break
+            except (TypeError, ValueError, AttributeError):
+                logger.warning("Optional native speech analysis disabled for TTS stream")
+                native_observing = False
+                native_pending = []
         if observing:
             try:
                 if analyzer is None:
@@ -69,9 +103,13 @@ async def observe_synthesized_audio(
         yield frame
     if observing:
         offer()
+    if native_observing:
+        offer_native()
 
 
-def agent_class_with_speech_envelope(base_agent_class: type, sink: SpeechSink) -> type:
+def agent_class_with_speech_envelope(
+    base_agent_class: type, sink: SpeechSink, *, native_sink: SpeechSink | None = None,
+) -> type:
     """Build a LiveKit-compatible Agent subclass without moving audio ownership.
 
     Deliberately uses Agent.default.tts_node so provider selection, sample
@@ -80,6 +118,8 @@ def agent_class_with_speech_envelope(base_agent_class: type, sink: SpeechSink) -
     """
     if not callable(sink):
         raise TypeError("nonblocking speech envelope sink required")
+    if native_sink is not None and not callable(native_sink):
+        raise TypeError("nonblocking native speech sink required")
 
     class SpeechEnvelopeAgent(base_agent_class):
         async def tts_node(self, text, model_settings):
@@ -87,7 +127,7 @@ def agent_class_with_speech_envelope(base_agent_class: type, sink: SpeechSink) -
             if inspect.isawaitable(source):
                 source = await source
             async for frame in observe_synthesized_audio(
-                source, sink, stream_id="tts-" + uuid.uuid4().hex,
+                source, sink, stream_id="tts-" + uuid.uuid4().hex, native_sink=native_sink,
             ):
                 yield frame
 
