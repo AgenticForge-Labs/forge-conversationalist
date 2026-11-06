@@ -142,6 +142,31 @@ def test_ensemble_startup_failure_keeps_voice_and_removes_robot_tools() -> None:
     session.say.assert_awaited_once()
 
 
+def test_unverified_original_speech_association_keeps_voice_without_robot_startup() -> None:
+    session = SimpleNamespace(start=AsyncMock(), say=AsyncMock(), on=Mock(), history=[])
+    tool_builder = Mock(return_value=[])
+    room = SimpleNamespace(name="room", local_participant=Mock())
+    ctx = SimpleNamespace(
+        room=room, job=SimpleNamespace(metadata='{"authorized_identity":"person"}'),
+        connect=AsyncMock(), add_shutdown_callback=Mock(),
+    )
+    original = SimpleNamespace(motion_profiles={"reachy": {"speaking": "original_v1"}})
+    with (
+        patch("forge_conversationalist.agent.load_profile", return_value=CloudProfile()),
+        patch("forge_conversationalist.agent.load_integrations", return_value=Integrations(ensemble=original)),
+        patch("forge_conversationalist.agent.build_voice_session", return_value=session),
+        patch("forge_conversationalist.agent.EnsembleSession") as robot_type,
+        patch("forge_conversationalist.agent.build_assistant_tools", tool_builder),
+        patch("forge_conversationalist.agent.register_transcript_rpc"),
+        patch("forge_conversationalist.agent._register_voice_rpc"),
+    ):
+        asyncio.run(entrypoint(ctx))
+    robot_type.assert_not_called()
+    session.start.assert_awaited_once()
+    session.say.assert_awaited_once()
+    assert tool_builder.call_args.kwargs["ensemble_session"] is None
+
+
 def test_legacy_qwen_voice_metadata_stays_pinned_to_its_model() -> None:
     assert _requested_qwen_voice('{"tts_voice":"longanhuan_v3.6"}') == "longanhuan_v3.6"
     assert _requested_qwen_voice('{"tts_voice":"untrusted-value"}') is None
