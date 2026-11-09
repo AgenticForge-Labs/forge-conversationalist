@@ -13,6 +13,7 @@ data = json.loads(Path(sys.argv[sys.argv.index("--config") + 1]).read_text())
 log = Path(data["test_log"])
 reject = data.get("test_reject_native", False)
 delay = data.get("test_native_delay_s", 0)
+presence_delay = data.get("test_presence_delay_s", 0)
 malformed = data.get("test_malformed_native", False)
 app = MCPServer("fake-native-gain")
 performers = {"reachy": {
@@ -59,6 +60,8 @@ async def ensemble_state() -> State:
 async def ensemble_presence(session_id: str, event_id: str, sequence: int,
                             state: str, source: str = "agent_state",
                             interrupted: bool = False) -> Receipt:
+    if state == "speaking" and presence_delay:
+        await asyncio.sleep(presence_delay)
     globals()["state"] = state
     record("presence", state=state, sequence=sequence, interrupted=interrupted)
     return {"outcome": "accepted", "state": state, "performers": performers}

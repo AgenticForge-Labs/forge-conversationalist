@@ -154,6 +154,7 @@ def test_unverified_original_speech_association_keeps_voice_without_robot_startu
     with (
         patch("forge_conversationalist.agent.load_profile", return_value=CloudProfile()),
         patch("forge_conversationalist.agent.load_integrations", return_value=Integrations(ensemble=original)),
+        patch("forge_conversationalist.agent._identified_output_sdk_available", return_value=False),
         patch("forge_conversationalist.agent.build_voice_session", return_value=session),
         patch("forge_conversationalist.agent.EnsembleSession") as robot_type,
         patch("forge_conversationalist.agent.build_assistant_tools", tool_builder),
@@ -165,6 +166,82 @@ def test_unverified_original_speech_association_keeps_voice_without_robot_startu
     session.start.assert_awaited_once()
     session.say.assert_awaited_once()
     assert tool_builder.call_args.kwargs["ensemble_session"] is None
+
+
+@pytest.mark.parametrize(("output_supported", "preinterrupt"), [(True, False), (True, True), (False, False)])
+def test_original_speech_registers_robot_tools_only_after_output_verification(output_supported, preinterrupt) -> None:
+    listeners = {}
+    session_listeners = {}
+
+    class Output:
+        identified_playback_supported = output_supported
+
+        def on(self, name, callback):
+            listeners.setdefault(name, []).append(callback)
+
+        def off(self, name, callback):
+            listeners[name].remove(callback)
+
+    lifecycle = []
+    agent = SimpleNamespace(update_tools=AsyncMock(), update_instructions=AsyncMock())
+
+    async def start_session(**_kwargs):
+        lifecycle.append("session_started")
+        if preinterrupt:
+            session_listeners["agent_state_changed"](SimpleNamespace(new_state="speaking"))
+            session_listeners["user_state_changed"](SimpleNamespace(new_state="speaking"))
+
+    async def update_tools(_tools):
+        lifecycle.append("robot_tools_enabled")
+
+    agent.update_tools.side_effect = update_tools
+    session = SimpleNamespace(
+        start=AsyncMock(side_effect=start_session), say=AsyncMock(),
+        on=lambda name, callback: session_listeners.__setitem__(name, callback), history=[],
+        output=SimpleNamespace(audio=Output()), agent_state="idle",
+    )
+    robot = SimpleNamespace(
+        start=AsyncMock(return_value={"state": "disconnected"}), close=AsyncMock(),
+        observe=Mock(), associate_native_playback=Mock(), begin_native_gain=Mock(),
+        offer_native_gain=Mock(), cancel_native_gain=Mock(),
+    )
+    room = SimpleNamespace(name="room", local_participant=Mock())
+    ctx = SimpleNamespace(
+        room=room, job=SimpleNamespace(metadata='{"authorized_identity":"person"}'),
+        connect=AsyncMock(), add_shutdown_callback=Mock(),
+    )
+    original = SimpleNamespace(motion_profiles={"reachy": {"speaking": "original_v1"}})
+    with (
+        patch("forge_conversationalist.agent.load_profile", return_value=CloudProfile()),
+        patch("forge_conversationalist.agent.load_integrations",
+              return_value=Integrations(ensemble=original)),
+        patch("forge_conversationalist.agent._identified_output_sdk_available", return_value=True),
+        patch("forge_conversationalist.agent.build_voice_session", return_value=session),
+        patch("forge_conversationalist.agent.EnsembleSession", return_value=robot),
+        patch("forge_conversationalist.agent.agent_class_with_speech_envelope",
+              return_value=lambda **_kwargs: agent),
+        patch("forge_conversationalist.agent.build_assistant_tools", return_value=[]),
+        patch("forge_conversationalist.agent.register_transcript_rpc"),
+        patch("forge_conversationalist.agent._register_voice_rpc"),
+        patch("forge_conversationalist.agent.register_robot_rpc") as register_robot,
+    ):
+        asyncio.run(entrypoint(ctx))
+    assert lifecycle[0] == "session_started"
+    session.say.assert_awaited_once()
+    if output_supported:
+        assert lifecycle == ["session_started", "robot_tools_enabled"]
+        agent.update_instructions.assert_awaited_once()
+        register_robot.assert_called_once()
+        if preinterrupt:
+            robot.observe.assert_not_called()
+        else:
+            robot.observe.assert_called_once_with("idle")
+        assert "identified_playback_started" in listeners
+    else:
+        agent.update_tools.assert_not_awaited()
+        register_robot.assert_not_called()
+        robot.close.assert_awaited_once()
+        robot.observe.assert_not_called()
 
 
 def test_legacy_qwen_voice_metadata_stays_pinned_to_its_model() -> None:

@@ -6,10 +6,11 @@ Sending each feature immediately causes Puppeteer's freshness window to expire
 while the response is still playing. Generated PCM offsets do not establish
 track playback or speaker acoustic timing.
 
-The existing bounded speech pacer can buffer native-gain or generic-envelope
-features and release them at 50 ms intervals after an explicitly associated
-output start. It is not connected to live output and does not make the current
-`smooth_v2` or `original_v1` profile playback synchronized by itself.
+The bounded speech pacer can buffer native-gain or generic-envelope features
+and release them at 50 ms intervals after an explicitly associated output start.
+The original profile can use an experimental identified-output SDK capability;
+the stock SDK lacks it, and the worker then continues voice without the robot.
+Generic `smooth_v2` envelope delivery is not yet connected to this paced path.
 
 ## Identity gap
 
@@ -23,17 +24,18 @@ speech handle, or FIFO alone can therefore attach the wrong features to output.
 Resampling can also replace `AudioFrame` objects, so Python object identity is
 not a dependable association.
 
-## Required integration
+## Experimental integration
 
-Obtain a trustworthy, unique generated-segment identity at output capture and
-the associated start/progress/finish or interruption evidence from LiveKit's
-existing audio path. Carry the identity across buffering and resampling, and
-distinguish a segment dropped before capture from one that started. Use the
-existing room-owned feature pacer and MCP child; do not make another audio
-sink, player, robot scheduler or SDK connection. If the association cannot be
-proven, do not arm that segment.
+An unmerged local LiveKit experiment carries an opaque generated-segment ID
+through resampling and room-output buffering and emits it after the first
+frame is accepted. The worker validates the capability on the live output
+before enabling original speech. It uses the existing room-owned feature
+pacer and MCP child; it does not make another audio sink, player, robot
+scheduler or SDK connection. If association fails, it does not arm that
+segment. The SDK experiment requires review and is not installed by default.
 
-Exercise concurrent and pre-generated segments, late start events, capture
-failure, resampling, silence, interruption, room close, timeouts, queue limits,
-and missing SDK capabilities with fake devices. A generated-PCM offset or
-track event is not a measured acoustic or physical motion timestamp.
+Fake-device tests exercise pre-generated segments, late events, capture
+failure, resampling, interruption, room close, timeouts, queue limits and
+missing SDK capabilities. This is not complete physical qualification. A
+generated-PCM offset or track event is not a measured acoustic or physical
+motion timestamp.

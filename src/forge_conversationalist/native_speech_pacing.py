@@ -29,7 +29,7 @@ class NativeSpeechPacer:
     """
 
     def __init__(self, *, max_hops: int = 1200, max_lateness_s: float = 0.15,
-                 feature_kind: str = "native") -> None:
+                 feature_kind: str = "native", drop_late: bool = False) -> None:
         if type(max_hops) is not int or not 1 <= max_hops <= 1200:
             raise ValueError("feature buffer must hold between 1 and 1200 hops")
         if (isinstance(max_lateness_s, bool) or not isinstance(max_lateness_s, (int, float))
@@ -37,7 +37,10 @@ class NativeSpeechPacer:
             raise ValueError("feature lateness bound must be between 0 and 0.5 seconds")
         if feature_kind not in {"native", "envelope"}:
             raise ValueError("unsupported speech feature kind")
+        if type(drop_late) is not bool or (drop_late and feature_kind != "native"):
+            raise ValueError("late-hop dropping requires native gain")
         self._feature_kind = feature_kind
+        self._drop_late = drop_late
         self._max_hops = max_hops
         self._max_lateness_s = float(max_lateness_s)
         self._stream: str | None = None
@@ -119,7 +122,7 @@ class NativeSpeechPacer:
         self._anchor = float(output_started_at)
 
     def take_due(self, *, now: float, max_batch: int = 8) -> list[dict[str, object]]:
-        """Remove due hops once; late hops fence rather than burst or retry."""
+        """Remove due hops once; late hops fence or are discarded, never replayed."""
         if isinstance(now, bool) or not isinstance(now, (int, float)) or not math.isfinite(now):
             raise ValueError("finite monotonic time required")
         if type(max_batch) is not int or not 1 <= max_batch <= 8:
@@ -128,8 +131,16 @@ class NativeSpeechPacer:
             return []
         deadline = self._anchor + int(self._pending[0]["offset_ms"]) / 1000.0
         if now - deadline > self._max_lateness_s:
-            self.invalidate()
-            return []
+            if not self._drop_late:
+                self.invalidate()
+                return []
+            while self._pending:
+                deadline = self._anchor + int(self._pending[0]["offset_ms"]) / 1000.0
+                if now - deadline <= self._max_lateness_s:
+                    break
+                self._pending.popleft()
+            if not self._pending:
+                return []
         due = []
         while self._pending and len(due) < max_batch:
             deadline = self._anchor + int(self._pending[0]["offset_ms"]) / 1000.0

@@ -70,6 +70,18 @@ def test_interruption_and_excessive_lateness_fence_without_replay():
         pacer.arm(stream_id="s", output_started_at=21.0)
 
 
+def test_native_pacer_drops_old_hops_and_continues_with_fresh_features():
+    pacer = NativeSpeechPacer(drop_late=True)
+    for start in (0, 8):
+        assert pacer.offer([hop(i) for i in range(start, start + 8)])
+    pacer.arm(stream_id="s", output_started_at=100.0)
+    result = pacer.take_due(now=100.42)
+    assert [entry["sequence"] for entry in result] == [6, 7, 8]
+    assert not pacer.fenced
+    assert all(100.42 - (100.0 + entry["offset_ms"] / 1000) <= 0.15 for entry in result)
+    assert [entry["sequence"] for entry in pacer.take_due(now=100.46)] == [9]
+
+
 def test_unassociated_or_interrupted_stream_cannot_emit():
     pacer = NativeSpeechPacer()
     pacer.offer([hop(0)])

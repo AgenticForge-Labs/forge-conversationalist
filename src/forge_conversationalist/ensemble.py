@@ -415,10 +415,18 @@ class EnsembleSession:
             self._cancelled_speech_streams.update(self._active_speech_streams.values())
             self._active_speech_streams.clear()
             self._native_speaking_ack = False
-            if interrupted or self._native_armed:
+            if interrupted or (self._native_armed and source != "playback"):
                 for pacer in self._native_pending.values():
                     pacer.invalidate()
                 self._native_pending.clear()
+                self._native_armed = False
+            elif self._native_armed:
+                # A normally finished output segment is not an interruption
+                # of a later segment that TTS has already generated.
+                if self._native_pacer is not None:
+                    self._native_pacer.invalidate()
+                if self._native_stream is not None:
+                    self._native_pending.pop(self._native_stream, None)
                 self._native_armed = False
         self._last_state = state
         self._last_source = source
@@ -448,7 +456,7 @@ class EnsembleSession:
                 or len(self._native_streams_seen) >= 4096
                 or len(self._native_pending) >= 4):
             return False
-        pacer = NativeSpeechPacer()
+        pacer = NativeSpeechPacer(drop_late=True)
         pacer.bind(stream_id)
         self._native_pending[stream_id] = pacer
         if self._native_pacer is None:
@@ -478,6 +486,16 @@ class EnsembleSession:
             if pacer is self._native_pacer:
                 self._native_armed = False
             return False
+
+    def cancel_native_gain(self, stream_id: str) -> None:
+        """Discard one feature stream without retrying or changing voice."""
+        if not isinstance(stream_id, str):
+            return
+        pacer = self._native_pending.pop(stream_id, None)
+        if pacer is not None:
+            pacer.invalidate()
+            if pacer is self._native_pacer:
+                self._native_armed = False
 
     def associate_native_playback(self, stream_id: str, *, output_started_at: float) -> bool:
         """Bind a verified stream to an output segment's monotonic start time.
