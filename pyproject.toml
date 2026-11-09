@@ -2,6 +2,7 @@
 name = "forge-conversationalist"
 version = "0.1.0"
 description = "Device-independent LiveKit voice conversation worker"
+license = "Apache-2.0"
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "livekit-agents[openai,silero,mcp]>=1.8,<1.9",

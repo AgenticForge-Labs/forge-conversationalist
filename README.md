@@ -84,3 +84,7 @@ Thanks to [LiveKit Agents](https://github.com/livekit/agents) for the real-time 
 The development browser token gate is not production authentication. Robot motion and consequential external actions require explicit authorization and the owning system's safety and approval checks. Interrupting speech does not confirm that an external operation stopped. The app does not persist transcripts or audio to disk; provider and LiveKit retention depends on their configuration. See [status](STATUS.md) for the scope of validation and outstanding acceptance.
 
 This project is in active development.
+
+## License
+
+AgenticForge Labs-authored code is licensed under the [Apache License 2.0](LICENSE). Third-party dependencies, datasets, recordings, and other externally sourced materials retain their respective licenses and attribution requirements.
