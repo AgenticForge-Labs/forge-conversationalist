@@ -188,6 +188,15 @@ class PuppeteerEnsembleConfig:
             if speaking == "smooth_v2" and performer not in driven:
                 raise ValueError("smooth_v2 speaking requires explicit speech-driven performer")
             reviewed[performer] = {"idle": idle, "speaking": speaking}
+        fallback = data.get("reachy_legacy_speech_fallback", False)
+        if type(fallback) is not bool:
+            raise ValueError("Reachy legacy speech fallback must be a boolean")
+        if fallback and (
+            reachy.get("instance_id") not in driven
+            or data.get("reachy_expression_style", "classic") != "classic"
+            or reviewed.get(reachy.get("instance_id"), {}).get("speaking") != "smooth_v2"
+        ):
+            raise ValueError("legacy speech fallback requires smooth_v2, speech-driven Reachy and classic style")
         object.__setattr__(self, "performer_ids", ids)
         object.__setattr__(self, "schema_version", data["schema_version"])
         object.__setattr__(self, "motion_profiles", reviewed)

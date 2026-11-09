@@ -85,6 +85,21 @@ def test_static_preflight_is_nonmoving_and_does_not_open_devices(tmp_path, capsy
         config.preflight()
 
 
+def test_legacy_speech_fallback_requires_explicit_boolean_and_smooth_profile(tmp_path):
+    path = operator_config(tmp_path, duo=False, reachy_legacy_speech_fallback=True)
+    assert PuppeteerEnsembleConfig(path).preflight()["outcome"] == "static_config_valid"
+    data = json.loads(path.read_text())
+    data["reachy_legacy_speech_fallback"] = "true"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="boolean"):
+        PuppeteerEnsembleConfig(path)
+    data["reachy_legacy_speech_fallback"] = True
+    data["motion_profiles"]["reachy"]["speaking"] = "legacy"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="smooth_v2"):
+        PuppeteerEnsembleConfig(path)
+
+
 def test_original_idle_preflight_requires_grant_authority_and_original_neutral(tmp_path):
     path = operator_config(tmp_path, duo=False,
                            motion_profiles={"reachy": {"idle": "original_v1"}})
