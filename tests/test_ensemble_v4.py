@@ -15,14 +15,9 @@ def provider(kind, ident):
     if kind == "stackchan":
         return {"backend": "stackchan_sdk", "device": kind, "instance_id": ident,
                 "allowed_tools": ["head_move", "face_update", "device_stop"]}
-    names = ("idle", "listening", "speaking", "yes", "no", "acknowledge", "neutral")
-    revisions = [f"sha256:{index:064x}" for index in range(1, len(names) + 1)]
-    return {"instance_id": ident, "robot_id": "so101", "calibration_id": "simulation",
-            "mode": "simulation", "programs": [{"name": name, "revision": revision,
-                "frames": [{"at_s": 0, "joints_rad": [0, 0, 0, 0, 0]},
-                           {"at_s": .1, "joints_rad": [0, 0, 0, 0, 0]}]}
-                for name, revision in zip(names, revisions)],
-            "approved_revisions": revisions}
+    return {"instance_id": ident, "mode": "existing_broker",
+            "broker_url": "http://127.0.0.1:8765", "token_env": "SOARM_TOKEN",
+            "allowed_tools": ["robot_capabilities", "robot_state", "stop"]}
 
 
 def make_room(tmp_path, selected):
@@ -235,7 +230,7 @@ async def test_v4_ensemble_session_drives_real_puppeteer_sdk_simulation(tmp_path
     if os.environ.get("SOARM_TEST_INSTALLED"):
         pythonpath = ""
     launcher.write_text("#!/bin/sh\nexport PYTHONPATH=" + repr(pythonpath) + ":${PYTHONPATH:-}\n"
-        + "exec " + repr(str(sdk_python)) + " -c 'from forge_puppeteer.mcp.ensemble_launcher import main; main()' \"$@\"\n")
+        + "exec " + repr(str(sdk_python)) + " -c 'from forge_puppeteer.ensemble.launcher import main; main()' \"$@\"\n")
     launcher.chmod(0o755)
     config = PuppeteerEnsembleConfig(room_path, command=str(launcher))
     room = EnsembleSession(config, room_id="sim-room", caller_id="local-test")
@@ -291,6 +286,8 @@ async def test_v4_ensemble_session_drives_real_puppeteer_sdk_simulation(tmp_path
 def _options_room(tmp_path, reachy_options=None, stackchan_options=None, *, physical=True):
     for kind, options in (("reachy", reachy_options), ("stackchan", stackchan_options)):
         body = {"kind": kind, "id": kind, "provider": provider(kind, kind)}
+        if kind == "reachy":
+            body["provider"]["allowed_tools"] += ["wake_up", "original_idle", "pose_and_antennas"]
         if options is not None:
             body["options"] = options
         (tmp_path / f"{kind}.json").write_text(json.dumps(body))

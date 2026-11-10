@@ -82,153 +82,32 @@ class PuppeteerEnsembleConfig:
             raise ValueError("PUPPETEER_ENSEMBLE_CONFIG must contain valid UTF-8 JSON") from exc
         if not isinstance(data, dict):
             raise TypeError("PUPPETEER_ENSEMBLE_CONFIG must contain an object")
-        if (data.get("schema_version") not in (1, 2, 3, 4)
-            or type(data.get("schema_version")) is not int):
-            raise ValueError("Puppeteer ensemble requires explicit operator authorization")
-        if (data["schema_version"] != 4
-                and data.get("motion_authority") != "I_AUTHORIZE_ENSEMBLE_ROBOT_MOTION"):
-            raise ValueError("Puppeteer ensemble requires explicit operator authorization")
-        if data["schema_version"] == 4:
-            ids, robot_data = self._read_v4_robot_files(data)
-            if any(not isinstance(x, str) or not x for x in ids) or len(set(ids)) != len(ids):
-                raise ValueError("Puppeteer v4 room must pin unique performer identities")
-            profiles, driven = self._v4_profiles(robot_data)
-            object.__setattr__(self, "performer_ids", tuple(ids))
-            object.__setattr__(self, "schema_version", 4)
-            object.__setattr__(self, "motion_profiles", profiles)
-            object.__setattr__(self, "speech_driven_performers", driven)
-            # Include referenced robot files in integrity fencing, so changing
-            # an ID, provider, or grant after preflight invalidates the room.
-            digest_source = source + b"\0" + b"\0".join(
-                self._v4_referenced_bytes(ref) for ref in data["robots"]
-            )
-            object.__setattr__(self, "digest", hashlib.sha256(digest_source).hexdigest())
-            return
-        reachy = data.get("reachy")
-        stackchan = data.get("stackchan")
-        arm = data.get("soarm101")
-        if not isinstance(reachy, dict) or (
-            reachy.get("backend") != "reachy_sdk" or reachy.get("device") != "reachy"
-        ):
-            raise ValueError("Puppeteer ensemble must use native SDK providers")
-        if data["schema_version"] in (1, 3):
-            if not isinstance(stackchan, dict) or (
-                stackchan.get("backend") != "stackchan_sdk"
-                or stackchan.get("device") != "stackchan"
-            ):
-                raise ValueError("Puppeteer ensemble requires an explicit native StackChan")
-            if data["schema_version"] == 1:
-                if not isinstance(arm, dict) or arm.get("mode") not in {
-                    "simulation", "attended_physical_trial",
-                }:
-                    raise ValueError("three-robot ensemble requires SO-ARM101")
-                ids = (
-                    reachy.get("instance_id"), stackchan.get("instance_id"),
-                    arm.get("instance_id"),
-                )
-            else:
-                if "soarm101" in data:
-                    raise ValueError("two-robot ensemble cannot declare SO-ARM101")
-                ids = (reachy.get("instance_id"), stackchan.get("instance_id"))
-        else:
-            if "stackchan" in data or "soarm101" in data:
-                raise ValueError("Reachy-only deployment cannot include other devices")
-            ids = (reachy.get("instance_id"),)
+        if type(data.get("schema_version")) is not int or data["schema_version"] != 4:
+            raise ValueError(
+                "Puppeteer ensemble config must be schema version 4 (convert older files with "
+                "forge-puppeteer's scripts/migrate-room-config.py)")
+        ids, robot_data = self._read_v4_robot_files(data)
         if any(not isinstance(x, str) or not x for x in ids) or len(set(ids)) != len(ids):
-            raise ValueError("Puppeteer ensemble must pin unique performer identities")
-        for name in ("action_journal", "ownership_db", "reachy_neutral_head"):
-            value = data.get(name)
-            if not isinstance(value, str) or not Path(value).is_absolute():
-                raise ValueError(f"Puppeteer ensemble requires absolute {name}")
-        if Path(data["action_journal"]).resolve() == Path(data["ownership_db"]).resolve():
-            raise ValueError("Puppeteer action journal and ownership state must be distinct")
-        # Perform the no-I/O part of PR1's explicit profile admission again
-        # at the worker boundary. Actual SDK capability/geometry validation
-        # remains authoritative only in the Puppeteer launcher.
-        profiles = data.get("motion_profiles", {})
-        driven = data.get("speech_driven_performers", [])
-        if not isinstance(profiles, dict) or not isinstance(driven, (list, tuple)):
-            raise TypeError("motion profiles and speech performers must be explicit mappings")
-        if any(not isinstance(x, str) or x not in ids for x in driven):
-            raise ValueError("speech-driven performer identities must be selected")
-        if len(set(driven)) != len(driven):
-            raise ValueError("speech-driven performer identities must be unique")
-        if set(driven) - {reachy.get("instance_id"), (
-            stackchan.get("instance_id") if isinstance(stackchan, dict) else None
-        )}:
-            raise ValueError("SO-ARM is not approved for speech-reactive streaming")
-        reviewed: dict[str, dict[str, str]] = {}
-        for performer, choice in profiles.items():
-            if performer not in ids or not isinstance(choice, dict) or set(choice) - {"idle", "speaking"}:
-                raise ValueError("motion profile references an unsupported performer or field")
-            idle = choice.get("idle", "legacy")
-            speaking = choice.get("speaking", "legacy")
-            if not isinstance(idle, str) or not isinstance(speaking, str) or (
-                idle not in {"legacy", "native_v1", "smooth_v2", "original_v1"} or
-                speaking not in {"legacy", "native_v1", "smooth_v2", "original_v1"}
-            ):
-                raise ValueError("unknown Puppeteer motion profile")
-            if performer == (arm.get("instance_id") if isinstance(arm, dict) else None) and (
-                idle != "legacy" or speaking != "legacy"
-            ):
-                raise ValueError("SO-ARM only permits approved finite legacy choreography")
-            if idle == "original_v1":
-                if performer != reachy.get("instance_id"):
-                    raise ValueError("original_v1 idle is available only for Reachy")
-                if (
-                    "original_idle" not in reachy.get("allowed_tools", [])
-                    or data.get("reachy_original_idle_authority") != "I_AUTHORIZE_REACHY_ORIGINAL_IDLE"
-                ):
-                    raise ValueError("original_v1 idle requires original_idle grant and explicit authority")
-            if speaking == "original_v1":
-                if performer != reachy.get("instance_id") or idle != "original_v1":
-                    raise ValueError("original_v1 speaking requires original_v1 Reachy idle")
-                if (
-                    "original_speech" not in reachy.get("allowed_tools", [])
-                    or data.get("reachy_original_speech_authority") != "I_AUTHORIZE_REACHY_ORIGINAL_SPEECH"
-                ):
-                    raise ValueError("original_v1 speaking requires original_speech grant and explicit authority")
-            if performer == reachy.get("instance_id") and (
-                idle in {"native_v1", "smooth_v2"} or speaking in {"native_v1", "smooth_v2"}
-            ):
-                grants = reachy.get("allowed_tools", [])
-                neutral = data.get("reachy_neutral_antennas_rad")
-                sway = data.get("reachy_antenna_sway_rad", 0.18)
-                if not isinstance(grants, list) or "pose_and_antennas" not in grants:
-                    raise ValueError("native Reachy profiles require pose_and_antennas grant")
-                if (
-                    not isinstance(neutral, (list, tuple)) or len(neutral) != 2
-                    or any(type(v) not in (int, float) or not math.isfinite(v) for v in neutral)
-                    or type(sway) not in (int, float) or not math.isfinite(sway)
-                    or sway < 0 or any(abs(v) + sway > math.pi / 2 for v in neutral)
-                ):
-                    raise ValueError("native Reachy requires bounded reviewed antenna neutral")
-            if speaking == "smooth_v2" and performer not in driven:
-                raise ValueError("smooth_v2 speaking requires explicit speech-driven performer")
-            reviewed[performer] = {"idle": idle, "speaking": speaking}
-        fallback = data.get("reachy_legacy_speech_fallback", False)
-        if type(fallback) is not bool:
-            raise ValueError("Reachy legacy speech fallback must be a boolean")
-        if fallback and (
-            reachy.get("instance_id") not in driven
-            or data.get("reachy_expression_style", "classic") != "classic"
-            or reviewed.get(reachy.get("instance_id"), {}).get("speaking") != "smooth_v2"
-        ):
-            raise ValueError("legacy speech fallback requires smooth_v2, speech-driven Reachy and classic style")
-        object.__setattr__(self, "performer_ids", ids)
-        object.__setattr__(self, "schema_version", data["schema_version"])
-        object.__setattr__(self, "motion_profiles", reviewed)
-        object.__setattr__(self, "speech_driven_performers", tuple(driven))
-        object.__setattr__(self, "digest", hashlib.sha256(source).hexdigest())
+            raise ValueError("Puppeteer v4 room must pin unique performer identities")
+        profiles, driven = self._v4_profiles(robot_data)
+        object.__setattr__(self, "performer_ids", tuple(ids))
+        object.__setattr__(self, "schema_version", 4)
+        object.__setattr__(self, "motion_profiles", profiles)
+        object.__setattr__(self, "speech_driven_performers", driven)
+        # Include referenced robot files in integrity fencing, so changing
+        # an ID, provider, or grant after preflight invalidates the room.
+        digest_source = source + b"\0" + b"\0".join(
+            self._v4_referenced_bytes(ref) for ref in data["robots"]
+        )
+        object.__setattr__(self, "digest", hashlib.sha256(digest_source).hexdigest())
 
     def require_unchanged(self) -> None:
         """Fail before starting the child if an approved config changed on disk."""
         source = self.config_path.read_bytes()
-        if self.schema_version == 4:
-            data = json.loads(source)
-            source += b"\0" + b"\0".join(
-                self._v4_referenced_bytes(ref) for ref in data["robots"]
-            )
+        data = json.loads(source)
+        source += b"\0" + b"\0".join(
+            self._v4_referenced_bytes(ref) for ref in data["robots"]
+        )
         if hashlib.sha256(source).hexdigest() != self.digest:
             raise PermissionError("Puppeteer ensemble operator config changed since validation")
 
@@ -275,6 +154,22 @@ class PuppeteerEnsembleConfig:
         for key in booleans & set(options):
             if type(options[key]) is not bool:
                 raise ValueError(f"Puppeteer v4 option {key} must be true or false")
+
+    @staticmethod
+    def _check_v4_grants(kind: str, options: dict, grants: list) -> None:
+        """Options that need an explicit SDK tool grant (mirrors Puppeteer's load-time check)."""
+        if kind != "reachy":
+            return
+        tools = set(grants)
+        if options.get("startup_behavior") == "wake_up_if_sleeping" and "wake_up" not in tools:
+            raise ValueError("Reachy wake-up startup requires the wake_up grant")
+        if options.get("idle") == "original_v1" and "original_idle" not in tools:
+            raise ValueError("original_v1 idle requires original_idle grant")
+        if options.get("expression_style") == "expressive" or options.get("speaking") == "smooth_v2":
+            if "pose_and_antennas" not in tools:
+                raise ValueError("expressive Reachy motion requires the pose_and_antennas grant")
+            if options.get("neutral_antennas_rad") is None:
+                raise ValueError("expressive Reachy motion requires reviewed neutral_antennas_rad")
 
     @staticmethod
     def _v4_profiles(robots) -> tuple[dict[str, dict[str, str]], tuple[str, ...]]:
@@ -388,6 +283,7 @@ class PuppeteerEnsembleConfig:
                     raise ValueError("Puppeteer v4 SDK core grants are required")
                 if data.get("physical") is not True:
                     raise ValueError("Puppeteer v4 Reachy and StackChan need physical: true on the room")
+                self._check_v4_grants(ref["kind"], robot.get("options", {}), grants)
             else:
                 # v4's file-composed Puppeteer SO-ARM provider is a broker
                 # client binding. It intentionally carries no serial/device
@@ -525,21 +421,7 @@ class PuppeteerEnsembleConfig:
                         raise ValueError("physical daemon config requires sdk_physical_daemon mode")
                     parsed.append(robot)
                     continue
-                arm_fields = {
-                    "instance_id", "robot_id", "calibration_id", "mode", "port",
-                    "human_lease_path", "physical_authority", "max_joint_speed_deg_s",
-                    "max_joint_acceleration_deg_s2", "max_duration_s", "max_start_error_rad",
-                    "startup_behavior", "idle_behavior", "startup_target_joints_rad",
-                    "startup_target_revision", "startup_authority", "programs",
-                    "approved_revisions", "watchdog_timeout_s",
-                }
-                if (set(cfg) - arm_fields or cfg.get("instance_id") != ref["id"]
-                    or cfg.get("mode") not in {"simulation", "attended_physical_trial"}
-                    or not isinstance(cfg.get("robot_id"), str)
-                    or not isinstance(cfg.get("calibration_id"), str)
-                    or not isinstance(cfg.get("programs"), list)
-                    or not isinstance(cfg.get("approved_revisions"), list)):
-                    raise ValueError("Puppeteer v4 SO-ARM101 provider identity or schema mismatch")
+                raise ValueError("Puppeteer v4 SO-ARM101 needs the SDK broker binding (broker_url)")
             parsed.append(robot)
         if len(set(kinds)) != len(kinds) or len(set(ids)) != len(ids):
             raise ValueError("Puppeteer v4 robot kinds and performer IDs must be unique")
@@ -565,101 +447,46 @@ class PuppeteerEnsembleConfig:
         """
         self.require_unchanged()
         data = json.loads(self.config_path.read_text(encoding="utf-8"))
-        if self.schema_version == 4:
-            self._read_v4_robot_files(data)
-            soarm_motion = {}
-            for ref in data["robots"]:
-                if ref["kind"] == "soarm101":
-                    path = Path(ref["file"])
-                    if not path.is_absolute():
-                        path = self.config_path.parent / path
-                    provider = json.loads(path.read_text(encoding="utf-8"))["provider"]
-                    revisions = provider.get("choreography_revisions", {})
-                    soarm_motion[ref["id"]] = {
-                        "configuration": "motion_configured" if revisions else "hold_only",
-                        "configured_behaviors": sorted(revisions),
-                        "live_readiness_verified": False,
-                    }
-            if "reachy_neutral_head" in data:
-                try:
-                    matrix = json.loads(Path(data["reachy_neutral_head"]).read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError, ValueError) as exc:
-                    raise ValueError("operator-reviewed Reachy neutral file is invalid") from exc
-                if (not isinstance(matrix, list) or len(matrix) != 4 or
-                    any(not isinstance(row, list) or len(row) != 4 or
-                        any(type(v) not in (int, float) or not math.isfinite(v) for v in row)
-                        for row in matrix) or matrix[3] != [0, 0, 0, 1]):
-                    raise ValueError("Reachy neutral must be a finite affine 4x4 matrix")
-            return {
-                "schema": "forge.ensemble_preflight.v1", "outcome": "static_config_valid",
-                "config_sha256": self.digest, "schema_version": 4,
-                "performer_ids": list(self.performer_ids), "motion_profiles": {
-                    name: {"idle": profile.get("idle", "legacy"), "speaking": profile.get("speaking", "legacy")}
-                    for name, profile in self.motion_profiles.items()},
-                "soarm_motion": soarm_motion,
-                "speech_driven_performers": list(self.speech_driven_performers),
-                "sdk_connections_opened": False,
-                "physical_motion_dispatched": False, "hardware_capabilities_verified": False,
-                "physical_neutral_verified": False, "physical_stop_verified": False,
-                "physical_sleep_verified": False, "acoustic_playout_measured": False,
-            }
-        # Pure local file checks. No SDK/serial/daemon is imported or opened.
-        neutral_path = Path(data["reachy_neutral_head"])
-        if not neutral_path.is_file():
-            raise ValueError("operator-reviewed Reachy neutral file is missing")
-        try:
-            matrix = json.loads(neutral_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
-            raise ValueError("operator-reviewed Reachy neutral file is invalid") from exc
-        if (
-            not isinstance(matrix, list) or len(matrix) != 4
-            or any(
-                not isinstance(row, list) or len(row) != 4
-                or any(type(value) not in (int, float) or not math.isfinite(value) for value in row)
-                for row in matrix
-            )
-            or matrix[3] != [0, 0, 0, 1]
-        ):
-            raise ValueError("Reachy neutral must be a finite affine 4x4 matrix")
-        reachy = data["reachy"]
-        selection = self.motion_profiles.get(reachy["instance_id"], {})
-        if selection.get("idle") == "original_v1" and any(
-            abs(value - (1.0 if i == j else 0.0)) > 1e-9
-            for i, row in enumerate(matrix) for j, value in enumerate(row)
-        ):
-            raise ValueError("original_v1 requires an operator-reviewed identity neutral reference")
-        if reachy.get("physical_authority") != "I_AUTHORIZE_REACHY_CONTROL" or not {
-            "head_pose", "play_move", "device_stop",
-        } <= set(reachy.get("allowed_tools", [])):
-            raise ValueError("Reachy SDK operator authority and core grants are required")
-        if "stackchan" in data:
-            stackchan = data["stackchan"]
-            if stackchan.get("physical_authority") != "I_AUTHORIZE_STACKCHAN_CONTROL" or not {
-                "head_move", "face_update", "device_stop",
-            } <= set(stackchan.get("allowed_tools", [])):
-                raise ValueError("StackChan SDK operator authority and core grants are required")
-        if "REVIEW_REQUIRED" in self.config_path.read_text(encoding="utf-8"):
-            raise ValueError("operator review placeholders remain in the native config")
+        self._read_v4_robot_files(data)
+        soarm_motion = {}
+        for ref in data["robots"]:
+            if ref["kind"] == "soarm101":
+                path = Path(ref["file"])
+                if not path.is_absolute():
+                    path = self.config_path.parent / path
+                provider = json.loads(path.read_text(encoding="utf-8"))["provider"]
+                revisions = provider.get("choreography_revisions", {})
+                soarm_motion[ref["id"]] = {
+                    "configuration": "motion_configured" if revisions else "hold_only",
+                    "configured_behaviors": sorted(revisions),
+                    "live_readiness_verified": False,
+                }
+        if "reachy_neutral_head" in data:
+            try:
+                matrix = json.loads(Path(data["reachy_neutral_head"]).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError) as exc:
+                raise ValueError("operator-reviewed Reachy neutral file is invalid") from exc
+            if (not isinstance(matrix, list) or len(matrix) != 4 or
+                any(not isinstance(row, list) or len(row) != 4 or
+                    any(type(v) not in (int, float) or not math.isfinite(v) for v in row)
+                    for row in matrix) or matrix[3] != [0, 0, 0, 1]):
+                raise ValueError("Reachy neutral must be a finite affine 4x4 matrix")
+            if any(profile.get("idle") == "original_v1" for profile in self.motion_profiles.values()) and any(
+                    abs(value - (1.0 if i == j else 0.0)) > 1e-9
+                    for i, row in enumerate(matrix) for j, value in enumerate(row)):
+                raise ValueError("original_v1 requires an operator-reviewed identity neutral reference")
         return {
-            "schema": "forge.ensemble_preflight.v1",
-            "outcome": "static_config_valid",
-            "config_sha256": self.digest,
-            "schema_version": self.schema_version,
-            "performer_ids": list(self.performer_ids),
-            "motion_profiles": {
-                name: {
-                    "idle": self.motion_profiles.get(name, {}).get("idle", "legacy"),
-                    "speaking": self.motion_profiles.get(name, {}).get("speaking", "legacy"),
-                } for name in self.performer_ids
-            },
+            "schema": "forge.ensemble_preflight.v1", "outcome": "static_config_valid",
+            "config_sha256": self.digest, "schema_version": 4,
+            "performer_ids": list(self.performer_ids), "motion_profiles": {
+                name: {"idle": profile.get("idle", "legacy"), "speaking": profile.get("speaking", "legacy")}
+                for name, profile in self.motion_profiles.items()},
+            "soarm_motion": soarm_motion,
             "speech_driven_performers": list(self.speech_driven_performers),
             "sdk_connections_opened": False,
-            "physical_motion_dispatched": False,
-            "hardware_capabilities_verified": False,
-            "physical_neutral_verified": False,
-            "physical_stop_verified": False,
-            "physical_sleep_verified": False,
-            "acoustic_playout_measured": False,
+            "physical_motion_dispatched": False, "hardware_capabilities_verified": False,
+            "physical_neutral_verified": False, "physical_stop_verified": False,
+            "physical_sleep_verified": False, "acoustic_playout_measured": False,
         }
 
 
