@@ -22,8 +22,6 @@ from pathlib import Path
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
-from .native_speech_pacing import NativeSpeechPacer
-
 logger = logging.getLogger(__name__)
 SCHEMA = "forge.behavior.v1"
 TOOLS = frozenset({"ensemble_state", "ensemble_presence", "ensemble_expression"})
@@ -496,12 +494,9 @@ class EnsembleSession:
     def __init__(
         self, config: PuppeteerEnsembleConfig, *, room_id: str, caller_id: str,
         outgoing_speech_envelope: bool = False,
-        native_gain_performer: str | None = None,
     ):
         if not room_id or not caller_id:
             raise ValueError("authorized LiveKit room and caller are required for physical ensemble")
-        if native_gain_performer is not None and native_gain_performer not in config.performer_ids:
-            raise ValueError("native gain performer must be selected in the operator config")
         self.config = config
         self.room_id = room_id
         self.caller_id = caller_id
@@ -517,14 +512,6 @@ class EnsembleSession:
         self._closed = False
         self._outgoing_speech_envelope = outgoing_speech_envelope
         self._speech_capable = False
-        self._native_gain_performer = native_gain_performer
-        self._native_gain_capable = False
-        self._native_pacer: NativeSpeechPacer | None = None
-        self._native_stream: str | None = None
-        self._native_pending: dict[str, NativeSpeechPacer] = {}
-        self._native_streams_seen: set[str] = set()
-        self._native_armed = False
-        self._native_speaking_ack = False
         self._speech_offers = 0
         self._active_speech_streams: dict[str, str] = {}
         self._cancelled_speech_streams: set[str] = set()
@@ -640,20 +627,6 @@ class EnsembleSession:
             # utterance, including batches that raced with a barge-in.
             self._cancelled_speech_streams.update(self._active_speech_streams.values())
             self._active_speech_streams.clear()
-            self._native_speaking_ack = False
-            if interrupted or (self._native_armed and source != "playback"):
-                for pacer in self._native_pending.values():
-                    pacer.invalidate()
-                self._native_pending.clear()
-                self._native_armed = False
-            elif self._native_armed:
-                # A normally finished output segment is not an interruption
-                # of a later segment that TTS has already generated.
-                if self._native_pacer is not None:
-                    self._native_pacer.invalidate()
-                if self._native_stream is not None:
-                    self._native_pending.pop(self._native_stream, None)
-                self._native_armed = False
         self._last_state = state
         self._last_source = source
         args = self._presence(state, source=source, interrupted=interrupted)
@@ -672,86 +645,6 @@ class EnsembleSession:
                 "enqueued_at_monotonic_ns": time.monotonic_ns(),
             },
         )
-
-    def begin_native_gain(self, stream_id: str) -> bool:
-        """Prepare one stream; this does not associate it with playback."""
-        if (not self._native_gain_capable or self._closed or self._motion_fenced
-                or self._task is None or self._task.done()
-                or not isinstance(stream_id, str) or not 1 <= len(stream_id) <= 128
-                or stream_id in self._native_streams_seen
-                or len(self._native_streams_seen) >= 4096
-                or len(self._native_pending) >= 4):
-            return False
-        pacer = NativeSpeechPacer(drop_late=True)
-        pacer.bind(stream_id)
-        self._native_pending[stream_id] = pacer
-        if self._native_pacer is None:
-            self._native_pacer = pacer
-            self._native_stream = stream_id
-        self._native_streams_seen.add(stream_id)
-        return True
-
-    def offer_native_gain(self, frames: list[dict[str, object]]) -> bool:
-        """Buffer content-free features; no transport or hardware call occurs."""
-        if (not isinstance(frames, list) or not frames or not isinstance(frames[0], dict)
-                or self._closed or self._motion_fenced):
-            return False
-        stream_id = frames[0].get("stream_id")
-        if not isinstance(stream_id, str):
-            return False
-        pacer = self._native_pending.get(stream_id)
-        if pacer is None:
-            return False
-        try:
-            accepted = pacer.offer(frames)
-            if not accepted and pacer is self._native_pacer:
-                self._native_armed = False
-            return accepted
-        except (TypeError, ValueError):
-            pacer.invalidate()
-            if pacer is self._native_pacer:
-                self._native_armed = False
-            return False
-
-    def cancel_native_gain(self, stream_id: str) -> None:
-        """Discard one feature stream without retrying or changing voice."""
-        if not isinstance(stream_id, str):
-            return
-        pacer = self._native_pending.pop(stream_id, None)
-        if pacer is not None:
-            pacer.invalidate()
-            if pacer is self._native_pacer:
-                self._native_armed = False
-
-    def associate_native_playback(self, stream_id: str, *, output_started_at: float) -> bool:
-        """Bind a verified stream to an output segment's monotonic start time.
-
-        The caller must prove stream/segment identity. LiveKit output events
-        alone do not carry that identity, and acoustic playout is not measured.
-        """
-        if not isinstance(stream_id, str):
-            return False
-        pacer = self._native_pending.get(stream_id)
-        if (pacer is None
-                or self._closed or self._motion_fenced or self._last_state != "speaking"
-                or self._last_source != "playback"):
-            return False
-        try:
-            pacer.arm(stream_id=stream_id, output_started_at=output_started_at)
-            if self._native_pacer is not None and self._native_pacer is not pacer:
-                self._native_pacer.invalidate()
-                self._native_pending.pop(self._native_stream, None)
-            self._native_pacer = pacer
-            self._native_stream = stream_id
-            self._native_armed = True
-            self._queue.put_nowait(("_native_wakeup", {}, None))
-            return True
-        except (ValueError, asyncio.QueueFull):
-            pacer.invalidate()
-            if pacer is self._native_pacer:
-                self._native_armed = False
-            return False
-
 
     def offer_speech_envelope(
         self, frames: list[dict[str, object]], *, performer_id: str | None = None,
@@ -945,10 +838,6 @@ class EnsembleSession:
                 self._speech_capable = (
                     self._outgoing_speech_envelope and "ensemble_speech_envelope" in names
                 )
-                self._native_gain_capable = (
-                    self._native_gain_performer is not None
-                    and "ensemble_native_speech_gain" in names
-                )
                 if self._outgoing_speech_envelope and not self._speech_capable:
                     logger.warning("Puppeteer does not support optional speech envelope; voice continues")
                 elif self._speech_capable:
@@ -984,7 +873,6 @@ class EnsembleSession:
                     self._ready.set_result(status)
                 next_refresh = time.monotonic() + 10.0
                 while True:
-                    native_call_pacer = None
                     if (time.monotonic() >= next_refresh and self._queue.empty()
                             and not self._closed and not self._motion_fenced
                             and self._last_state is not None):
@@ -992,38 +880,19 @@ class EnsembleSession:
                             "ensemble_presence",
                             self._presence(self._last_state, source=self._last_source), None,
                         ))
-                    if (self._native_armed and self._native_speaking_ack
-                            and self._native_pacer is not None and self._queue.empty()):
-                        native_call_pacer = self._native_pacer
-                        frames = native_call_pacer.take_due(now=time.monotonic())
-                        if native_call_pacer.fenced:
-                            self._native_armed = False
-                            logger.warning("Native speech feature stream expired; observation stopped")
-                        if frames:
-                            tool = "ensemble_native_speech_gain"
-                            args = {"session_id": self.room_id,
-                                    "performer_id": self._native_gain_performer, "frames": frames}
+                    try:
+                        timeout = max(0.01, next_refresh - time.monotonic())
+                        tool, args, future = await asyncio.wait_for(self._queue.get(), timeout=timeout)
+                    except TimeoutError:
+                        if (time.monotonic() >= next_refresh and not self._closed
+                                and not self._motion_fenced and self._last_state is not None):
+                            tool = "ensemble_presence"
+                            args = self._presence(self._last_state, source=self._last_source)
                             future = None
                         else:
-                            native_call_pacer = None
-                    if native_call_pacer is None:
-                        try:
-                            timeout = 0.02 if self._native_armed else max(
-                                0.01, next_refresh - time.monotonic(),
-                            )
-                            tool, args, future = await asyncio.wait_for(self._queue.get(), timeout=timeout)
-                        except TimeoutError:
-                            if (time.monotonic() >= next_refresh and not self._closed
-                                    and not self._motion_fenced and self._last_state is not None):
-                                tool = "ensemble_presence"
-                                args = self._presence(self._last_state, source=self._last_source)
-                                future = None
-                            else:
-                                if time.monotonic() >= next_refresh:
-                                    next_refresh = time.monotonic() + 10.0
-                                continue
-                    if tool == "_native_wakeup":
-                        continue
+                            if time.monotonic() >= next_refresh:
+                                next_refresh = time.monotonic() + 10.0
+                            continue
                     if tool == "_close":
                         try:
                             value = await asyncio.wait_for(
@@ -1087,17 +956,12 @@ class EnsembleSession:
                             self._call(session, tool, args),
                             timeout=(
                                 MCP_ENVELOPE_TIMEOUT_S
-                                if tool in {"ensemble_speech_envelope", "ensemble_native_speech_gain"}
+                                if tool == "ensemble_speech_envelope"
                                 else MCP_EVENT_TIMEOUT_S
                             ),
                         )
                         if is_presence:
                             next_refresh = time.monotonic() + 10.0
-                            if (value.get("outcome") in {"accepted", "duplicate"}
-                                    and args.get("state") == "speaking"
-                                    and not args.get("interrupted")
-                                    and self._last_state == "speaking"):
-                                self._native_speaking_ack = True
                             logger.info(
                                 "puppeteer_presence_call_completed",
                                 extra={
@@ -1119,30 +983,6 @@ class EnsembleSession:
                             if isinstance(envelope_performer, str):
                                 self._speech_dropped_performers.add(envelope_performer)
                             logger.warning("Optional speech envelope observation unconfirmed")
-                        elif tool == "ensemble_native_speech_gain" and native_call_pacer is not None:
-                            sent = args["frames"]
-                            confirmed = (
-                                value.get("outcome") == "observed"
-                                and type(value.get("frames_accepted")) is int
-                                and value["frames_accepted"] == len(sent)
-                                and value.get("stream_id") == sent[-1]["stream_id"]
-                                and type(value.get("last_sequence")) is int
-                                and value["last_sequence"] == sent[-1]["sequence"]
-                                and value.get("timing_source") == "generated_pcm"
-                                and value.get("physical_motion_dispatched") is False
-                            )
-                            if not confirmed and native_call_pacer is self._native_pacer:
-                                native_call_pacer.invalidate()
-                                self._native_armed = False
-                                logger.warning("Native speech feature observation unconfirmed")
-                            elif confirmed:
-                                logger.debug("native_speech_gain_observed", extra={
-                                    "session_id": self.room_id,
-                                    "performer_id": self._native_gain_performer,
-                                    "last_sequence": sent[-1]["sequence"],
-                                    "acknowledged_at_monotonic_ns": time.monotonic_ns(),
-                                    "timing_source": "generated_pcm",
-                                })
                     except Exception as exc:  # noqa: BLE001 - MCP transport exceptions are arbitrary
                         if is_presence:
                             logger.warning(
@@ -1162,11 +1002,6 @@ class EnsembleSession:
                             if isinstance(envelope_performer, str):
                                 self._speech_dropped_performers.add(envelope_performer)
                             logger.warning("Optional speech envelope timed out or failed; stream disabled")
-                        if (tool == "ensemble_native_speech_gain" and native_call_pacer is not None
-                                and native_call_pacer is self._native_pacer):
-                            native_call_pacer.invalidate()
-                            self._native_armed = False
-                            logger.warning("Native speech feature transport failed; stream disabled")
                         if tool in {"ensemble_presence", "ensemble_expression"}:
                             self._motion_fenced = True
                             self._requires_operator_reconciliation = True
@@ -1174,10 +1009,6 @@ class EnsembleSession:
                         if isinstance(envelope_performer, str):
                             self._envelope_in_flight = None
         except BaseException as exc:
-            for pacer in self._native_pending.values():
-                pacer.invalidate()
-            self._native_pending.clear()
-            self._native_armed = False
             self._closed = True
             if self._ready is not None and not self._ready.done():
                 self._ready.set_exception(RuntimeError(f"Puppeteer ensemble startup failed in {phase}"))
@@ -1251,14 +1082,6 @@ class EnsembleSession:
         self._last_state = None
         self._shutdown_result = None
         self._speech_capable = False
-        self._native_gain_capable = False
-        for pacer in self._native_pending.values():
-            pacer.invalidate()
-        self._native_pending.clear()
-        self._native_pacer = None
-        self._native_stream = None
-        self._native_armed = False
-        self._native_speaking_ack = False
         self._active_speech_streams.clear()
         self._cancelled_speech_streams.clear()
         while True:
@@ -1281,14 +1104,8 @@ class EnsembleSession:
 
         Never issue an implicit neutral/recording/wake/sleep after an unknown
         action. A room disconnect acknowledgement does not establish physical
-        pose, torque state, neutral convergence or motor settling. Puppeteer
-        PR #20 remains independently hardware-gated.
+        pose, torque state, neutral convergence or motor settling.
         """
-        for pacer in self._native_pending.values():
-            pacer.invalidate()
-        self._native_pending.clear()
-        self._native_armed = False
-        self._native_speaking_ack = False
         if self._shutdown_result is not None:
             return dict(self._shutdown_result)
 
