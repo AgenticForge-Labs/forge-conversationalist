@@ -115,6 +115,8 @@ def test_playback_presence_opt_in_attaches_to_livekit_output_after_start() -> No
     session.start.assert_awaited_once()
     # No vocal greeting until the arm has finished waking up.
     assert order == ["arm_ready", "greeting"]
+    # Attentive (a short hold) while it wakes, rather than starting a long breath.
+    assert robot.observe.call_args_list[0].args == ("listening",)
     assert set(listeners) == {
         "playback_started", "playback_finished", "playback_progressed",
     }

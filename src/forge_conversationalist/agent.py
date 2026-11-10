@@ -575,6 +575,11 @@ async def entrypoint(ctx: object) -> None:
     # ...but not over a robot that is still waking up: the greeting waits until
     # the arm has reached neutral, then the talking movement can begin with it.
     if ensemble is not None:
+        # Let the robot stand attentive (a short still hold) once it is awake, not
+        # start a long breath: speech is about to begin, and a running breath must
+        # finish before the talking movement can start.
+        if not original_speech:
+            ensemble.observe("listening")
         await ensemble.wait_for_startup()
         roster = _robot_roster(await ensemble.status())
         if roster and not original_speech:
