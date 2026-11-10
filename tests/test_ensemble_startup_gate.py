@@ -23,7 +23,7 @@ def anyio_backend():
     return "asyncio"
 
 
-def child(tmp_path: Path, *, gate=True, park=True, park_result=None, ready=False):
+def child(tmp_path: Path, *, gate=True, park=True, park_result=None, ready=False, startup_polls=None):
     """A fake Puppeteer ensemble; returns (launcher path, events log path)."""
     events = tmp_path / "events.jsonl"
     park_result = park_result or {
@@ -39,15 +39,19 @@ def child(tmp_path: Path, *, gate=True, park=True, park_result=None, ready=False
         "import json, asyncio",
         "from pathlib import Path",
         "from mcp.server import MCPServer",
+        f"STARTUP_POLLS = {startup_polls!r}",
         "app = MCPServer('offline-ensemble')",
         f"log = Path({str(events)!r})",
         "def write(kind, value):",
         "    with log.open('a') as f:",
         "        f.write(json.dumps({'kind': kind, 'value': value}) + '\\n')",
         "IDLE = {'reachy': {'status': 'idle'}, 'stackchan': {'status': 'idle'}}",
+        "polls = {'n': 0}",
         "@app.tool()",
         "async def ensemble_state() -> dict[str, object]:",
-        "    return {'schema': 'forge.behavior.v1', 'session_id': None, 'state': 'disconnected',",
+        "    polls['n'] += 1",
+        "    extra = {} if STARTUP_POLLS is None else {'startup_complete': polls['n'] > STARTUP_POLLS}",
+        "    return {**extra, 'outcome': 'observed', 'schema': 'forge.behavior.v1', 'session_id': None, 'state': 'disconnected',",
         "      'performers': {n: {'expressions': ['yes'], 'status': 'idle',",
         "        'behavior_revision': 'sha256:' + 'a' * 64,",
         "        'presence_behaviors': ['idle', 'listening', 'speaking']} for n in ('reachy', 'stackchan')}}",
@@ -76,8 +80,8 @@ def child(tmp_path: Path, *, gate=True, park=True, park_result=None, ready=False
     if park:
         lines += [
             "@app.tool()",
-            "async def ensemble_park(action_id: str) -> dict[str, object]:",
-            "    write('park', {'action_id': action_id})",
+            "async def ensemble_park(action_id: str, settle_session: bool = False) -> dict[str, object]:",
+            "    write('park', {'action_id': action_id, 'settle_session': settle_session})",
             "    await asyncio.sleep(0.05)",
             f"    return {park_result!r}",
         ]
@@ -132,15 +136,18 @@ async def test_gate_tools_missing_on_an_older_puppeteer_are_reported_not_called(
     assert not [e for e in logged(events) if e["kind"] in {"startup_check", "prepare", "park"}]
 
 
-async def test_closing_a_session_parks_the_robots_after_the_disconnect_and_reports_it(tmp_path):
+async def test_closing_a_session_parks_the_robots_before_the_disconnect_and_reports_it(tmp_path):
     script, events = child(tmp_path)
     room = session(tmp_path, script)
     await room.start()
     room.observe("listening")
     evidence = await room.close()
     kinds = [e["kind"] for e in logged(events)]
-    assert kinds.index("park") > max(i for i, k in enumerate(kinds) if k == "presence")
-    assert logged(events)[[i for i, k in enumerate(kinds) if k == "presence"][-1]]["value"]["state"] == "disconnected"
+    last_presence = max(i for i, k in enumerate(kinds) if k == "presence")
+    # The session is settled and parked first; the disconnect (an urgent STOP) comes last.
+    assert kinds.index("park") < last_presence
+    assert logged(events)[last_presence]["value"]["state"] == "disconnected"
+    assert logged(events)[kinds.index("park")]["value"]["settle_session"] is True
     assert evidence["outcome"] == "acknowledged"
     assert evidence["sleep_request"] == "parked"
     assert evidence["sleep_performers"] == {"reachy": "at_sleep", "stackchan": "already_at_sleep"}
@@ -169,3 +176,34 @@ async def test_no_park_when_disabled_or_when_puppeteer_has_no_such_tool(tmp_path
     assert "park" not in [e["kind"] for e in logged(events)]
     assert evidence["sleep_request"] == "not_attempted"
     assert evidence["physical_sleep_verified"] is False
+
+
+async def test_the_greeting_waits_until_the_robots_report_startup_complete(tmp_path):
+    script, events = child(tmp_path, startup_polls=3)
+    room = session(tmp_path, script)
+    try:
+        await room.start()  # reads the state once while verifying the contract
+        assert await room.wait_for_startup(timeout=10) is True
+        assert [e for e in logged(events) if e["kind"] == "presence"], "startup was triggered by presence"
+    finally:
+        await room.close()
+
+
+async def test_an_older_puppeteer_without_the_field_never_delays_the_voice(tmp_path):
+    script, _ = child(tmp_path)  # no startup_complete in its state
+    room = session(tmp_path, script)
+    try:
+        await room.start()
+        assert await room.wait_for_startup(timeout=1) is True
+    finally:
+        await room.close()
+
+
+async def test_a_startup_that_never_finishes_gives_up_instead_of_silencing_the_voice(tmp_path):
+    script, _ = child(tmp_path, startup_polls=10_000)
+    room = session(tmp_path, script)
+    try:
+        await room.start()
+        assert await room.wait_for_startup(timeout=0.6) is False
+    finally:
+        await room.close()

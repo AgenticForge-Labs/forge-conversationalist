@@ -37,6 +37,8 @@ SHUTDOWN_ACK_TIMEOUT_S = 8.0
 # A sleep move can take as long as the SDK's longest pinned segment (30 s) plus a re-check.
 MCP_PREPARE_TIMEOUT_S = 60.0
 PARK_TIMEOUT_S = 60.0
+STARTUP_READY_TIMEOUT_S = 45.0
+STARTUP_POLL_S = 0.25
 PREPARE_ACTIONS = frozenset({"move_to_sleep", "confirm_at_sleep"})
 # An optional feature observation must never monopolize the one room MCP
 # pipe while a live user can interrupt speech and require Puppeteer's STOP.
@@ -875,20 +877,22 @@ class EnsembleSession:
             raise RuntimeError("Puppeteer ensemble MCP result is unconfirmed")
         return response.structured_content
 
-    async def _park_after_disconnect(self, session, disconnect: object) -> None:
+    async def _park_before_disconnect(self, session) -> None:
         """End the session at the robots' sleep poses, once, and record what happened.
 
-        Only after Puppeteer acknowledged the disconnect (so no conversation is
-        active and the outcome of the last action is known). A fault stops it and is
-        reported; it is never retried here.
+        Runs *before* the disconnect: Puppeteer lets the running behaviors finish
+        (a disconnect is an urgent STOP, which would leave the SO-ARM's SDK session
+        unable to take a sleep move) and then moves the robots to sleep. The
+        disconnect always follows. A fault stops the park and is reported; it is
+        never retried here.
         """
         try:
-            if not (self._park_capable and isinstance(disconnect, dict)
-                    and disconnect.get("outcome") == "accepted"):
+            if not self._park_capable:
                 self._park_summary = {"outcome": "not_attempted"}
                 return
             result = await asyncio.wait_for(
-                self._call(session, "ensemble_park", {"action_id": f"park-{uuid.uuid4().hex}"}),
+                self._call(session, "ensemble_park", {
+                    "action_id": f"park-{uuid.uuid4().hex}", "settle_session": True}),
                 timeout=PARK_TIMEOUT_S,
             )
             details = result.get("results")
@@ -1069,6 +1073,7 @@ class EnsembleSession:
                     if tool == "_native_wakeup":
                         continue
                     if tool == "_close":
+                        await self._park_before_disconnect(session)
                         try:
                             value = await asyncio.wait_for(
                                 self._call(
@@ -1095,7 +1100,6 @@ class EnsembleSession:
                                     "outcome": "unknown", "reason": "room_shutdown",
                                     "retry_safe": False,
                                 })
-                        await self._park_after_disconnect(session, value)
                         break
                     if tool == "ensemble_speech_envelope" and (
                         not self._speech_capable or self._motion_fenced
@@ -1252,6 +1256,27 @@ class EnsembleSession:
     async def status(self) -> dict:
         return await self._request("ensemble_state", {})
 
+    async def wait_for_startup(self, timeout: float = STARTUP_READY_TIMEOUT_S) -> bool:
+        """Wait until the robots have finished their wake-up motion (or give up).
+
+        The opening greeting should not be spoken over a robot that is still
+        rising to neutral. Robots held by the startup question do not count, and
+        an older Puppeteer that does not report ``startup_complete`` never delays
+        the voice. Returns False if it gave up, in which case the caller carries
+        on rather than leaving the user in silence.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            status = await self._request("ensemble_state", {})
+            if status.get("outcome") not in {"observed", "accepted"}:
+                return False
+            if status.get("startup_complete", True) is True:
+                return True
+            if time.monotonic() >= deadline:
+                logger.warning("Puppeteer startup still running; continuing without waiting")
+                return False
+            await asyncio.sleep(STARTUP_POLL_S)
+
     async def startup(self) -> dict:
         """Read-only: is each real robot at its sleep position? Never moves anything."""
         if not self._gate_capable:
@@ -1376,7 +1401,8 @@ class EnsembleSession:
             future = asyncio.get_running_loop().create_future()
             self._enqueue_priority("_close", {}, future, interrupted=True)
             try:
-                response = await asyncio.wait_for(future, timeout=SHUTDOWN_ACK_TIMEOUT_S + 1)
+                response = await asyncio.wait_for(future, timeout=(
+                    SHUTDOWN_ACK_TIMEOUT_S + 1 + (PARK_TIMEOUT_S + 3 if self._park_capable else 0)))
                 statuses = response.get("performers")
                 if isinstance(statuses, dict):
                     per_robot = {

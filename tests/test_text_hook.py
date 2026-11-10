@@ -127,6 +127,7 @@ def test_livekit_state_events_map_and_dedupe_generic_presence() -> None:
     states = []
     hook = SessionStateHook(states.append)
     hook.on_agent_state_changed(SimpleNamespace(new_state="initializing"))
+    # Waiting for the user is idle (breathing), not listening.
     hook.on_agent_state_changed(SimpleNamespace(new_state="listening"))
     hook.on_agent_state_changed(SimpleNamespace(new_state="speaking"))
     # Routine user listening cannot override an active agent speaking state.
@@ -138,13 +139,26 @@ def test_livekit_state_events_map_and_dedupe_generic_presence() -> None:
     hook.on_agent_state_changed(SimpleNamespace(new_state="idle"))
 
     assert [(item.state, item.source) for item in states] == [
-        ("listening", "agent"),
+        ("idle", "agent"),
         ("speaking", "agent"),
         ("listening", "user"),
         ("speaking", "user"),
         ("idle", "agent"),
     ]
     assert [item.interrupted for item in states] == [False, False, True, False, False]
+
+
+def test_the_robot_listens_only_while_the_user_talks_or_the_agent_thinks() -> None:
+    states = []
+    hook = SessionStateHook(states.append)
+    hook.on_agent_state_changed(SimpleNamespace(new_state="listening"))  # waiting
+    hook.on_user_state_changed(SimpleNamespace(new_state="speaking"))    # user talks
+    hook.on_user_state_changed(SimpleNamespace(new_state="listening"))   # user stops
+    hook.on_agent_state_changed(SimpleNamespace(new_state="thinking"))   # model works
+    hook.on_agent_state_changed(SimpleNamespace(new_state="speaking"))
+    hook.on_agent_state_changed(SimpleNamespace(new_state="listening"))  # waiting again
+    assert [item.state for item in states] == [
+        "idle", "listening", "idle", "listening", "speaking", "idle"]
 
 
 def test_state_hook_registers_and_removes_both_livekit_events() -> None:
@@ -173,3 +187,24 @@ def test_state_hook_registers_and_removes_both_livekit_events() -> None:
     remove_session_state_hook(session, hook)
     session.emit("agent_state_changed", SimpleNamespace(new_state="idle"))
     assert [state.state for state in states] == ["speaking", "listening"]
+
+
+@pytest.mark.anyio
+async def test_a_short_pause_after_the_user_talks_stays_attentive_and_does_not_start_a_breath() -> None:
+    import asyncio
+
+    states = []
+    hook = SessionStateHook(states.append, listening_hold_s=0.05)
+    hook.on_agent_state_changed(SimpleNamespace(new_state="listening"))
+    hook.on_user_state_changed(SimpleNamespace(new_state="speaking"))
+    hook.on_user_state_changed(SimpleNamespace(new_state="listening"))
+    # The model starts thinking right away: no idle in between.
+    hook.on_agent_state_changed(SimpleNamespace(new_state="thinking"))
+    await asyncio.sleep(0.1)
+    assert [s.state for s in states] == ["idle", "listening"]
+
+    # Nothing follows (a cough): after the hold the robot goes back to breathing.
+    hook.on_agent_state_changed(SimpleNamespace(new_state="listening"))
+    assert [s.state for s in states] == ["idle", "listening"]
+    await asyncio.sleep(0.1)
+    assert [s.state for s in states] == ["idle", "listening", "idle"]

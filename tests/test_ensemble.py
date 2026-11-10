@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from v4_config import write_ensemble
 
-from forge_conversationalist.agent import _room_instructions
+from forge_conversationalist.agent import _robot_roster, _room_instructions
 from forge_conversationalist.assistant_tools import build_assistant_tools
 from forge_conversationalist.ensemble import (
     SPEECH_ENVELOPE_MAX_QUEUE,
@@ -51,6 +51,14 @@ def test_native_ensemble_disabled_by_default_and_no_new_agent_identity(tmp_path)
     assert "request_ensemble_gesture" in _room_instructions(
         configured, caller_id="operator", session_id="room"
     )
+    roster = _robot_roster({"performers": {
+        "soarm101": {"status": "idle", "expressions": ["yes", "no", "curious"]},
+        "reachy": {"status": "unavailable", "expressions": ["yes"]},
+    }})
+    assert roster == "Connected robots and their approved gestures: soarm101 (yes, no, curious)."
+    assert roster in _room_instructions(
+        configured, caller_id="operator", session_id="room", robot_roster=roster)
+    assert _robot_roster({"performers": {}}) == "" and _robot_roster(None) == ""
 
 
 @pytest.mark.parametrize("kwargs", [
