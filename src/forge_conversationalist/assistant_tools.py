@@ -135,8 +135,47 @@ def build_assistant_tools(
             from livekit.agents import function_tool as function_tool_factory
 
         async def get_ensemble_status() -> str:
-            """Read Puppeteer's observed room/performer states; no physical success inferred."""
-            return json.dumps(await ensemble_session.status())
+            """Read Puppeteer's observed room/performer states; no physical success inferred.
+
+            Also reports any robot that is holding still because it is not at its
+            sleep position (``startup_questions``), with how far off it is.
+            """
+            status = await ensemble_session.status()
+            startup = await ensemble_session.startup()
+            performers = startup.get("performers") if startup.get("outcome") == "observed" else None
+            held = {
+                name: {key: entry.get(key) for key in
+                       ("status", "message", "deltas_deg", "can_move_to_sleep")}
+                for name, entry in (performers or {}).items()
+                if isinstance(entry, dict) and entry.get("status") not in {"at_sleep", "confirmed_by_user"}
+            }
+            if held and isinstance(status, dict):
+                status = {**status, "startup_questions": held, "spoken_guidance": (
+                    "A robot is holding still because it is not at its sleep position. Tell the "
+                    "user which robot and how far off it is, and ask whether to move it to sleep. "
+                    "Do nothing until they answer.")}
+            return json.dumps(status)
+
+        async def prepare_robot_for_conversation(performer_id: str, action: str) -> str:
+            """Answer a startup question for one robot, after the user said yes.
+
+            action is move_to_sleep (one sleep move, then a re-check) or confirm_at_sleep
+            (the user says a robot that cannot measure its own pose is already parked).
+            Never retried; report the outcome as it is.
+            """
+            result = await ensemble_session.prepare(performer_id, action)
+            outcome = result.get("outcome")
+            guidance = {
+                "at_sleep": f"{performer_id} reached its sleep position and joins the conversation shortly.",
+                "already_at_sleep": f"{performer_id} was already at its sleep position.",
+                "confirmed": f"Recorded that {performer_id} is parked; it joins the conversation shortly.",
+                "not_at_sleep_after_move": (
+                    f"{performer_id} moved but is still not at its sleep position. Say so and do not retry."),
+                "failed": f"The move for {performer_id} failed. Report that and do not retry.",
+            }.get(outcome, (
+                f"{performer_id} could not be prepared ({result.get('reason') or outcome}). "
+                "Report that and do not retry automatically."))
+            return json.dumps({**result, "spoken_guidance": guidance})
 
         async def request_ensemble_gesture(name: str, performer_id: str) -> str:
             """Request one finite catalogued gesture from a selected performer.
@@ -182,6 +221,15 @@ def build_assistant_tools(
             function_tool_factory(
                 get_ensemble_status, name="get_ensemble_status",
                 description="Read Puppeteer room status and individual configured performer evidence.",
+            ),
+            function_tool_factory(
+                prepare_robot_for_conversation, name="prepare_robot_for_conversation",
+                description=(
+                    "Only after the user said yes to your question about a robot that is not at its "
+                    "sleep position (see startup_questions in get_ensemble_status): move that one robot to "
+                    "sleep (action move_to_sleep) or record that a robot which cannot measure itself is "
+                    "already parked (action confirm_at_sleep). Never without that yes; never retry."
+                ),
             ),
             function_tool_factory(
                 request_ensemble_gesture, name="request_ensemble_gesture",

@@ -647,7 +647,14 @@ def _room_instructions(
             "infer physical completion from "
             "accepted admission, or retry unknown outcomes. If a gesture was accepted, "
             "say it was requested, not that it happened. If a performer is blocked, "
-            "say its outcome is unconfirmed; never promise it will settle or resume."
+            "say its outcome is unconfirmed; never promise it will settle or resume. "
+            "Early in the conversation call get_ensemble_status once. If it lists "
+            "startup_questions, a robot is holding still because it is not at its sleep "
+            "position: say which robot and how far off it is, and ask whether to move it to "
+            "sleep. Only after the user says yes, call prepare_robot_for_conversation with "
+            "action move_to_sleep (or confirm_at_sleep if the user says a robot that cannot "
+            "measure itself is already parked). Never move a robot without that yes, and "
+            "never retry a failed move."
         )
     if config is None:
         if getattr(integrations, "embodiment", None) is not None:
