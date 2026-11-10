@@ -175,8 +175,10 @@ async def test_v4_ensemble_session_drives_real_puppeteer_sdk_simulation(tmp_path
 
     from forge_conversationalist.ensemble import EnsembleSession
 
-    sdk_root = Path("/home/larry/code/soarm101-motion-sdk")
-    puppet_root = Path("/home/larry/code/forge-puppeteer")
+    # Sibling checkouts next to this repository, overridable for other layouts.
+    siblings = Path(__file__).resolve().parents[2]
+    sdk_root = Path(os.environ.get("SOARM_SDK_ROOT", siblings / "soarm101-motion-sdk"))
+    puppet_root = Path(os.environ.get("PUPPETEER_ROOT", siblings / "forge-puppeteer"))
     executable = Path(os.environ.get("SOARM_TEST_SIM_DAEMON", str(sdk_root / ".venv/bin/soarm101-sim-daemon")))
     if not executable.is_file():
         pytest.skip("local SO-ARM SDK simulation executable is unavailable")
