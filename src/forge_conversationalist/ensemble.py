@@ -485,10 +485,10 @@ class PuppeteerEnsembleConfig:
                                 catalog_path = path.resolve().parent / catalog_path
                             if not catalog_path.is_file():
                                 raise ValueError("Puppeteer v4 SO-ARM trusted catalog is missing")
-                    elif (cfg.get("simulation_state_dir") is not None
-                        or cfg.get("trusted_choreography_catalog") is not None):
-                        if mode != "sdk_physical_daemon":
-                            raise ValueError("Puppeteer v4 SO-ARM simulation fields require SDK-owned mode")
+                    elif ((cfg.get("simulation_state_dir") is not None
+                           or cfg.get("trusted_choreography_catalog") is not None)
+                          and mode != "sdk_physical_daemon"):
+                        raise ValueError("Puppeteer v4 SO-ARM simulation fields require SDK-owned mode")
                     if mode == "sdk_physical_daemon":
                         daemon_config = cfg.get("physical_daemon_config")
                         startup_timeout = cfg.get("physical_startup_timeout_s", 10)
