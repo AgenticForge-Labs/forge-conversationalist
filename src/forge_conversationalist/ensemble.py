@@ -14,11 +14,13 @@ import json
 import logging
 import math
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
+from urllib.parse import urlsplit
 
 from .native_speech_pacing import NativeSpeechPacer
 
@@ -80,12 +82,28 @@ class PuppeteerEnsembleConfig:
             raise ValueError("PUPPETEER_ENSEMBLE_CONFIG must contain valid UTF-8 JSON") from exc
         if not isinstance(data, dict):
             raise TypeError("PUPPETEER_ENSEMBLE_CONFIG must contain an object")
-        if (
-            data.get("schema_version") not in (1, 2, 3)
-            or type(data.get("schema_version")) is not int
-            or data.get("motion_authority") != "I_AUTHORIZE_ENSEMBLE_ROBOT_MOTION"
-        ):
+        if (data.get("schema_version") not in (1, 2, 3, 4)
+            or type(data.get("schema_version")) is not int):
             raise ValueError("Puppeteer ensemble requires explicit operator authorization")
+        if (data["schema_version"] != 4
+                and data.get("motion_authority") != "I_AUTHORIZE_ENSEMBLE_ROBOT_MOTION"):
+            raise ValueError("Puppeteer ensemble requires explicit operator authorization")
+        if data["schema_version"] == 4:
+            ids, robot_data = self._read_v4_robot_files(data)
+            if any(not isinstance(x, str) or not x for x in ids) or len(set(ids)) != len(ids):
+                raise ValueError("Puppeteer v4 room must pin unique performer identities")
+            profiles, driven = self._v4_profiles(robot_data)
+            object.__setattr__(self, "performer_ids", tuple(ids))
+            object.__setattr__(self, "schema_version", 4)
+            object.__setattr__(self, "motion_profiles", profiles)
+            object.__setattr__(self, "speech_driven_performers", driven)
+            # Include referenced robot files in integrity fencing, so changing
+            # an ID, provider, or grant after preflight invalidates the room.
+            digest_source = source + b"\0" + b"\0".join(
+                self._v4_referenced_bytes(ref) for ref in data["robots"]
+            )
+            object.__setattr__(self, "digest", hashlib.sha256(digest_source).hexdigest())
+            return
         reachy = data.get("reachy")
         stackchan = data.get("stackchan")
         arm = data.get("soarm101")
@@ -205,8 +223,339 @@ class PuppeteerEnsembleConfig:
 
     def require_unchanged(self) -> None:
         """Fail before starting the child if an approved config changed on disk."""
-        if hashlib.sha256(self.config_path.read_bytes()).hexdigest() != self.digest:
+        source = self.config_path.read_bytes()
+        if self.schema_version == 4:
+            data = json.loads(source)
+            source += b"\0" + b"\0".join(
+                self._v4_referenced_bytes(ref) for ref in data["robots"]
+            )
+        if hashlib.sha256(source).hexdigest() != self.digest:
             raise PermissionError("Puppeteer ensemble operator config changed since validation")
+
+    _REACHY_OPTION_KEYS: ClassVar[dict[str, set[str]]] = {
+        "expression_style": {"classic", "expressive"}, "startup_behavior": {"none", "wake_up_if_sleeping"},
+        "listening_mode": {"tilt", "hold"}, "speaking_axis": {"yaw", "tilt"},
+        "idle": {"default", "original_v1"}, "speaking": {"default", "smooth_v2"},
+    }
+    _REACHY_NUMBER_KEYS: ClassVar[set[str]] = {"listening_tilt_rad", "speaking_amplitude_rad", "expressive_amplitude_rad",
+                           "antenna_sway_rad", "breath_amplitude_m"}
+
+    @classmethod
+    def _check_v4_options(cls, kind: str, options: object) -> None:
+        """Static mirror of Puppeteer's v4 options: known keys and shapes only."""
+        if not isinstance(options, dict):
+            raise TypeError("Puppeteer v4 options must be an object")
+        booleans = {"speech_driven"}
+        if kind == "stackchan":
+            if set(options) - {"speaking_mode", "speech_driven"} or options.get(
+                    "speaking_mode", "legacy_size") not in {"legacy_size", "native_weight"}:
+                raise ValueError("invalid Puppeteer v4 StackChan options")
+        else:
+            booleans |= {"legacy_speech_fallback"}
+            known = (set(cls._REACHY_OPTION_KEYS) | cls._REACHY_NUMBER_KEYS | booleans
+                     | {"neutral_antennas_rad"})
+            if set(options) - known:
+                raise ValueError("unknown Puppeteer v4 Reachy options")
+            for key, allowed in cls._REACHY_OPTION_KEYS.items():
+                if key in options and options[key] not in allowed:
+                    raise ValueError(f"invalid Puppeteer v4 Reachy option {key}")
+            for key in cls._REACHY_NUMBER_KEYS & set(options):
+                if type(options[key]) not in (int, float) or not math.isfinite(options[key]):
+                    raise ValueError(f"invalid Puppeteer v4 Reachy option {key}")
+            antennas = options.get("neutral_antennas_rad")
+            if antennas is not None and (not isinstance(antennas, list) or len(antennas) != 2 or any(
+                    type(v) not in (int, float) or not math.isfinite(v) for v in antennas)):
+                raise ValueError("invalid Puppeteer v4 Reachy option neutral_antennas_rad")
+            if options.get("speaking") == "smooth_v2" and options.get("speech_driven") is not True:
+                raise ValueError("smooth_v2 speaking requires explicit speech-driven performer")
+            if options.get("legacy_speech_fallback") is True and (
+                    options.get("speaking") != "smooth_v2" or options.get("speech_driven") is not True
+                    or options.get("expression_style", "classic") != "classic"):
+                raise ValueError("legacy speech fallback requires smooth_v2, speech-driven Reachy and classic style")
+        for key in booleans & set(options):
+            if type(options[key]) is not bool:
+                raise ValueError(f"Puppeteer v4 option {key} must be true or false")
+
+    @staticmethod
+    def _v4_profiles(robots) -> tuple[dict[str, dict[str, str]], tuple[str, ...]]:
+        """Motion profiles and speech-driven performers, derived from robot options."""
+        profiles: dict[str, dict[str, str]] = {}
+        driven: list[str] = []
+        for robot in robots:
+            options = robot.get("options") or {}
+            if robot["kind"] == "reachy":
+                idle = "original_v1" if options.get("idle") == "original_v1" else "legacy"
+                speaking = "smooth_v2" if options.get("speaking") == "smooth_v2" else "legacy"
+                if idle != "legacy" or speaking != "legacy":
+                    profiles[robot["id"]] = {"idle": idle, "speaking": speaking}
+            if robot["kind"] != "soarm101" and options.get("speech_driven") is True:
+                driven.append(robot["id"])
+        return profiles, tuple(driven)
+
+    def _v4_referenced_bytes(self, ref: dict) -> bytes:
+        """Hash robot config and every SDK-owned daemon config/catalog it references."""
+        robot_path = Path(ref["file"])
+        if not robot_path.is_absolute():
+            robot_path = self.config_path.parent / robot_path
+        robot_path = robot_path.resolve()
+        robot_bytes = robot_path.read_bytes()
+        try:
+            robot = json.loads(robot_bytes)
+            provider = robot.get("provider", {}) if isinstance(robot, dict) else {}
+            catalog = provider.get("trusted_choreography_catalog") if isinstance(provider, dict) else None
+            daemon_config = provider.get("physical_daemon_config") if isinstance(provider, dict) else None
+            referenced = []
+            if daemon_config:
+                config_path = Path(daemon_config)
+                if not config_path.is_absolute():
+                    config_path = robot_path.parent / config_path
+                config_bytes = config_path.resolve().read_bytes()
+                referenced.append(config_bytes)
+                try:
+                    daemon_data = json.loads(config_bytes)
+                    daemon_catalog = daemon_data.get("trusted_catalog_path")
+                    if daemon_catalog:
+                        referenced.append(Path(daemon_catalog).resolve().read_bytes())
+                except (ValueError, TypeError, AttributeError):
+                    raise ValueError("Puppeteer v4 physical daemon config is invalid") from None
+            if catalog:
+                catalog_path = Path(catalog)
+                if not catalog_path.is_absolute():
+                    catalog_path = robot_path.parent / catalog_path
+                referenced.append(catalog_path.resolve().read_bytes())
+            if referenced:
+                return robot_bytes + b"\0" + b"\0".join(referenced)
+        except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
+            raise ValueError("Puppeteer v4 robot file or trusted catalog is missing or invalid") from exc
+        return robot_bytes
+
+    def _read_v4_robot_files(self, data: dict) -> tuple[tuple[str, ...], tuple[dict, ...]]:
+        allowed = {"schema_version", "physical", "robots", "action_journal",
+                   "ownership_db", "reachy_neutral_head", "presence_ttl_s", "stop_timeout_s"}
+        if set(data) - allowed:
+            raise ValueError("unknown Puppeteer v4 room fields")
+        if type(data.get("physical", False)) is not bool:
+            raise ValueError("Puppeteer v4 physical must be true or false")
+        for key, low, high in (("presence_ttl_s", 1, 3600), ("stop_timeout_s", .1, 60)):
+            value = data.get(key, 30 if key == "presence_ttl_s" else 5)
+            if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f"invalid Puppeteer v4 {key}")
+        refs = data.get("robots")
+        if not isinstance(refs, list) or not refs or len(refs) > 3:
+            raise ValueError("Puppeteer v4 requires one to three robot file references")
+        kinds, ids, parsed = [], [], []
+        for ref in refs:
+            if (not isinstance(ref, dict) or set(ref) != {"kind", "id", "file"}
+                or ref.get("kind") not in {"reachy", "stackchan", "soarm101"}
+                or not isinstance(ref.get("id"), str) or not ref["id"]
+                or not isinstance(ref.get("file"), str) or not ref["file"]):
+                raise ValueError("invalid Puppeteer v4 robot reference")
+            kinds.append(ref["kind"]); ids.append(ref["id"])
+            path = Path(ref["file"])
+            path = path if path.is_absolute() else self.config_path.parent / path
+            try:
+                robot = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError) as exc:
+                raise ValueError("Puppeteer v4 robot file is missing or invalid") from exc
+            if (not isinstance(robot, dict) or set(robot) - {"options"} != {"kind", "id", "provider"}
+                or robot["kind"] != ref["kind"] or robot["id"] != ref["id"]
+                or not isinstance(robot["provider"], dict)):
+                raise ValueError("Puppeteer v4 robot file identity mismatch")
+            if ref["kind"] == "soarm101" and robot.get("options"):
+                raise ValueError("Puppeteer v4 SO-ARM101 takes no options")
+            if ref["kind"] != "soarm101":
+                self._check_v4_options(ref["kind"], robot.get("options", {}))
+            cfg = robot["provider"]
+            if ref["kind"] in {"reachy", "stackchan"}:
+                provider_fields = {
+                    "backend", "device", "instance_id", "name", "allowed_tools", "assets",
+                    "asset_root", "manifest", "action_journal", "ownership_db",
+                    "simulation_only", "broker_url",
+                    "allow_openshell_host", "broker_token_env", "broker_command",
+                    "broker_args", "broker_env", "port", "sdk_version", "host",
+                    "connection_mode", "daemon_port", "daemon",
+                    "expected_daemon_hardware_id", "restricted_actions", "approved_moves",
+                }
+                if set(cfg) - provider_fields:
+                    raise ValueError("unknown Puppeteer v4 SDK provider fields")
+                expected = ("reachy_sdk" if ref["kind"] == "reachy" else "stackchan_sdk")
+                if cfg.get("backend") != expected or cfg.get("device") != ref["kind"] or cfg.get("instance_id") != ref["id"]:
+                    raise ValueError("Puppeteer v4 SDK provider identity mismatch")
+                grants = cfg.get("allowed_tools")
+                required = ({"head_pose", "play_move", "device_stop"} if ref["kind"] == "reachy"
+                            else {"head_move", "face_update", "device_stop"})
+                if not isinstance(grants, list) or not required <= set(grants):
+                    raise ValueError("Puppeteer v4 SDK core grants are required")
+                if data.get("physical") is not True:
+                    raise ValueError("Puppeteer v4 Reachy and StackChan need physical: true on the room")
+            else:
+                # v4's file-composed Puppeteer SO-ARM provider is a broker
+                # client binding. It intentionally carries no serial/device
+                # settings or credentials, and keeps performer IDs identical.
+                if "broker_url" in cfg:
+                    broker_fields = {"instance_id", "broker_url", "token_env",
+                        "trusted_host_token_env", "choreography_revisions",
+                        "choreography_durations_s", "allowed_tools", "enable_joint_jog",
+                        "enable_cartesian_jog", "mode", "simulation_state_dir",
+                        "simulation_port", "sdk_simulation_executable",
+                        "trusted_choreography_catalog", "physical_daemon_config",
+                        "sdk_physical_executable", "physical_startup_timeout_s",
+                        "startup_target_revision", "pose_targets", "sleep_target", "sleep_check"}
+                    if (set(cfg) - broker_fields or cfg.get("instance_id") != ref["id"]
+                        or not isinstance(cfg.get("broker_url"), str)
+                        or not isinstance(cfg.get("token_env"), str)
+                        or not isinstance(cfg.get("allowed_tools"), list)
+                        or not {"robot_capabilities", "robot_state", "stop"} <= set(cfg["allowed_tools"])):
+                        raise ValueError("Puppeteer v4 SO-ARM broker provider identity or schema mismatch")
+                    # Mirror SOARMBrokerConfig's safety-relevant binding rules
+                    # here without importing Puppeteer into Conversationalist.
+                    mode = cfg.get("mode")
+                    if mode not in {"existing_broker", "sdk_simulation_daemon", "sdk_physical_daemon"}:
+                        raise ValueError("Puppeteer v4 SO-ARM broker mode is invalid")
+                    env_name = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+                    if (not env_name.fullmatch(cfg["token_env"])
+                        or (cfg.get("trusted_host_token_env") is not None
+                            and not env_name.fullmatch(cfg["trusted_host_token_env"]))):
+                        raise ValueError("Puppeteer v4 SO-ARM token environment binding is invalid")
+                    parsed_url = urlsplit(cfg["broker_url"])
+                    if (parsed_url.scheme != "http"
+                        or parsed_url.hostname not in {"127.0.0.1", "localhost", "::1"}
+                        or parsed_url.port is None or parsed_url.username is not None
+                        or parsed_url.password is not None or parsed_url.path not in {"", "/"}
+                        or parsed_url.query or parsed_url.fragment):
+                        raise ValueError("Puppeteer v4 SO-ARM broker URL must use explicit loopback HTTP")
+                    allowed_tools = cfg["allowed_tools"]
+                    known_tools = {"robot_health", "robot_capabilities", "robot_state", "list_assets",
+                        "replay_recording", "replay_sequence", "capture_camera", "go_pose",
+                        "jog_joint", "jog_cartesian", "move_gripper", "sleep", "sleep_up", "stop"}
+                    if (len(set(allowed_tools)) != len(allowed_tools)
+                        or set(allowed_tools) - known_tools
+                        or cfg.get("enable_joint_jog", False) != ("jog_joint" in allowed_tools)
+                        or cfg.get("enable_cartesian_jog", False) != ("jog_cartesian" in allowed_tools)):
+                        raise ValueError("Puppeteer v4 SO-ARM broker tool profile is invalid")
+                    revisions = cfg.get("choreography_revisions", {})
+                    pose_targets = cfg.get("pose_targets", {})
+                    if (not isinstance(pose_targets, dict) or len(pose_targets) > 25
+                            or (pose_targets and not cfg.get("trusted_host_token_env"))
+                            or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name)
+                                or name in {"idle", "listening", "speaking", "wake_to_neutral"}
+                                or name in revisions or not isinstance(pin, str)
+                                or not re.fullmatch(r"sha256:[0-9a-f]{64}", pin)
+                                for name, pin in pose_targets.items())):
+                        raise ValueError("Puppeteer v4 SO-ARM pose target pins are invalid")
+                    durations = cfg.get("choreography_durations_s", {})
+                    if (not isinstance(revisions, dict) or not isinstance(durations, dict)
+                        or any(not isinstance(name, str) for name in revisions)
+                        or (revisions and (not cfg.get("trusted_host_token_env")
+                            or not {"idle", "speaking"} <= set(revisions)
+                            or set(revisions) - {"idle", "listening", "speaking", "yes", "no", "acknowledge", "neutral", "confused", "surprised", "curious"}
+                            or set(durations) != set(revisions)
+                            or any(not isinstance(pin, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", pin)
+                                   for pin in revisions.values())
+                            or any(type(duration) not in (int, float) or not math.isfinite(duration)
+                                   or not 0.2 <= duration <= 30 for duration in durations.values()))
+                        or (not revisions and durations))):
+                        raise ValueError("Puppeteer v4 SO-ARM choreography pins or durations are invalid")
+                    target = cfg.get("startup_target_revision")
+                    if target is not None and (not isinstance(target, str)
+                            or not re.fullmatch(r"sha256:[0-9a-f]{64}", target) or not revisions):
+                        raise ValueError("Puppeteer v4 startup target pin is invalid")
+                    if mode == "sdk_physical_daemon" and revisions and not target:
+                        raise ValueError("Puppeteer v4 physical choreography requires a pinned startup target")
+                    if mode == "sdk_physical_daemon" and data.get("physical") is not True:
+                        raise ValueError("Puppeteer v4 SDK physical daemon needs physical: true on the room")
+                    sleep_target = cfg.get("sleep_target")
+                    if sleep_target is not None and sleep_target not in pose_targets:
+                        raise ValueError("Puppeteer v4 sleep_target must name a pose target")
+                    if type(cfg.get("sleep_check", True)) is not bool:
+                        raise ValueError("Puppeteer v4 sleep_check must be true or false")
+                    if mode == "sdk_simulation_daemon":
+                        state_dir = cfg.get("simulation_state_dir")
+                        port = cfg.get("simulation_port", 8765)
+                        if (not isinstance(state_dir, str) or not Path(state_dir).is_absolute()
+                            or type(port) is not int or not 1 <= port <= 65535
+                            or cfg["broker_url"] != f"http://127.0.0.1:{port}"):
+                            raise ValueError("Puppeteer v4 SO-ARM simulation binding is invalid")
+                        catalog = cfg.get("trusted_choreography_catalog")
+                        if revisions:
+                            if not isinstance(catalog, str) or not catalog:
+                                raise ValueError("Puppeteer v4 SO-ARM trusted catalog is required")
+                            catalog_path = Path(catalog)
+                            if not catalog_path.is_absolute():
+                                catalog_path = path.resolve().parent / catalog_path
+                            if not catalog_path.is_file():
+                                raise ValueError("Puppeteer v4 SO-ARM trusted catalog is missing")
+                    elif ((cfg.get("simulation_state_dir") is not None
+                           or cfg.get("trusted_choreography_catalog") is not None)
+                          and mode != "sdk_physical_daemon"):
+                        raise ValueError("Puppeteer v4 SO-ARM simulation fields require SDK-owned mode")
+                    if mode == "sdk_physical_daemon":
+                        daemon_config = cfg.get("physical_daemon_config")
+                        startup_timeout = cfg.get("physical_startup_timeout_s", 10)
+                        if (not isinstance(daemon_config, str) or not Path(daemon_config).is_absolute()
+                            or type(startup_timeout) not in (int, float) or not 1 <= startup_timeout <= 60
+                            or cfg["broker_url"] != f"http://127.0.0.1:{parsed_url.port}"):
+                            raise ValueError("Puppeteer v4 SO-ARM physical daemon binding is invalid")
+                        try:
+                            physical = json.loads(Path(daemon_config).read_bytes())
+                            required_physical = {
+                                "physical", "robot_id", "port", "calibration_id", "lease_path",
+                                "trusted_catalog_path", "loopback_port", "state_dir", "operator_choreography_only"}
+                            if (not isinstance(physical, dict) or not required_physical <= set(physical)
+                                or set(physical) - required_physical - {"establish_hold_on_startup", "joint_speed_deg_s", "joint_acceleration_deg_s2"}
+                                or physical.get("physical") is not True
+                                or type(physical.get("operator_choreography_only")) is not bool
+                                or type(physical.get("establish_hold_on_startup", False)) is not bool
+                                or (physical.get("establish_hold_on_startup") and not physical.get("operator_choreography_only"))
+                                or physical.get("loopback_port") != parsed_url.port
+                                or not all(isinstance(physical.get(k), str) and Path(physical[k]).is_absolute()
+                                           for k in (("trusted_catalog_path", "state_dir") if physical.get("operator_choreography_only")
+                                                     else ("lease_path", "trusted_catalog_path", "state_dir")))):
+                                raise ValueError
+                            configured_catalog = cfg.get("trusted_choreography_catalog")
+                            if configured_catalog:
+                                configured_catalog_path = Path(configured_catalog)
+                                if not configured_catalog_path.is_absolute():
+                                    configured_catalog_path = path.resolve().parent / configured_catalog_path
+                                if configured_catalog_path.resolve() != Path(physical["trusted_catalog_path"]).resolve():
+                                    raise ValueError
+                        except (OSError, ValueError, TypeError, KeyError):
+                            raise ValueError("Puppeteer v4 SO-ARM physical daemon config is missing or mismatched") from None
+                    elif cfg.get("physical_daemon_config") is not None:
+                        raise ValueError("physical daemon config requires sdk_physical_daemon mode")
+                    parsed.append(robot)
+                    continue
+                arm_fields = {
+                    "instance_id", "robot_id", "calibration_id", "mode", "port",
+                    "human_lease_path", "physical_authority", "max_joint_speed_deg_s",
+                    "max_joint_acceleration_deg_s2", "max_duration_s", "max_start_error_rad",
+                    "startup_behavior", "idle_behavior", "startup_target_joints_rad",
+                    "startup_target_revision", "startup_authority", "programs",
+                    "approved_revisions", "watchdog_timeout_s",
+                }
+                if (set(cfg) - arm_fields or cfg.get("instance_id") != ref["id"]
+                    or cfg.get("mode") not in {"simulation", "attended_physical_trial"}
+                    or not isinstance(cfg.get("robot_id"), str)
+                    or not isinstance(cfg.get("calibration_id"), str)
+                    or not isinstance(cfg.get("programs"), list)
+                    or not isinstance(cfg.get("approved_revisions"), list)):
+                    raise ValueError("Puppeteer v4 SO-ARM101 provider identity or schema mismatch")
+            parsed.append(robot)
+        if len(set(kinds)) != len(kinds) or len(set(ids)) != len(ids):
+            raise ValueError("Puppeteer v4 robot kinds and performer IDs must be unique")
+        for key in ("action_journal", "ownership_db"):
+            value = data.get(key)
+            if not isinstance(value, str) or not Path(value).is_absolute():
+                raise ValueError(f"Puppeteer v4 requires absolute {key}")
+        if Path(data["action_journal"]).resolve() == Path(data["ownership_db"]).resolve():
+            raise ValueError("Puppeteer v4 action journal and ownership state must be distinct")
+        if "reachy" in kinds:
+            neutral = data.get("reachy_neutral_head")
+            if not isinstance(neutral, str) or not Path(neutral).is_absolute():
+                raise ValueError("Puppeteer v4 Reachy requires absolute reachy_neutral_head")
+        elif "reachy_neutral_head" in data:
+            raise ValueError("Puppeteer v4 neutral pose requires selected Reachy")
+        return tuple(ids), tuple(parsed)
 
     def preflight(self) -> dict[str, object]:
         """No SDK import, device connection, motion, or credential disclosure.
@@ -216,6 +565,44 @@ class PuppeteerEnsembleConfig:
         """
         self.require_unchanged()
         data = json.loads(self.config_path.read_text(encoding="utf-8"))
+        if self.schema_version == 4:
+            self._read_v4_robot_files(data)
+            soarm_motion = {}
+            for ref in data["robots"]:
+                if ref["kind"] == "soarm101":
+                    path = Path(ref["file"])
+                    if not path.is_absolute():
+                        path = self.config_path.parent / path
+                    provider = json.loads(path.read_text(encoding="utf-8"))["provider"]
+                    revisions = provider.get("choreography_revisions", {})
+                    soarm_motion[ref["id"]] = {
+                        "configuration": "motion_configured" if revisions else "hold_only",
+                        "configured_behaviors": sorted(revisions),
+                        "live_readiness_verified": False,
+                    }
+            if "reachy_neutral_head" in data:
+                try:
+                    matrix = json.loads(Path(data["reachy_neutral_head"]).read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, ValueError) as exc:
+                    raise ValueError("operator-reviewed Reachy neutral file is invalid") from exc
+                if (not isinstance(matrix, list) or len(matrix) != 4 or
+                    any(not isinstance(row, list) or len(row) != 4 or
+                        any(type(v) not in (int, float) or not math.isfinite(v) for v in row)
+                        for row in matrix) or matrix[3] != [0, 0, 0, 1]):
+                    raise ValueError("Reachy neutral must be a finite affine 4x4 matrix")
+            return {
+                "schema": "forge.ensemble_preflight.v1", "outcome": "static_config_valid",
+                "config_sha256": self.digest, "schema_version": 4,
+                "performer_ids": list(self.performer_ids), "motion_profiles": {
+                    name: {"idle": profile.get("idle", "legacy"), "speaking": profile.get("speaking", "legacy")}
+                    for name, profile in self.motion_profiles.items()},
+                "soarm_motion": soarm_motion,
+                "speech_driven_performers": list(self.speech_driven_performers),
+                "sdk_connections_opened": False,
+                "physical_motion_dispatched": False, "hardware_capabilities_verified": False,
+                "physical_neutral_verified": False, "physical_stop_verified": False,
+                "physical_sleep_verified": False, "acoustic_playout_measured": False,
+            }
         # Pure local file checks. No SDK/serial/daemon is imported or opened.
         neutral_path = Path(data["reachy_neutral_head"])
         if not neutral_path.is_file():
@@ -293,6 +680,9 @@ class EnsembleSession:
         self.caller_id = caller_id
         self._sequence = -1
         self._last_state: str | None = None
+        # Startup idle is emitted once for this host session, after Puppeteer
+        # readiness is verified. Reopening the child must not rearm motion.
+        self._initial_idle_sent = False
         self._last_source: Literal["agent_state", "playback"] = "agent_state"
         self._queue: asyncio.Queue[tuple[str, dict, asyncio.Future | None]] = asyncio.Queue(128)
         self._task: asyncio.Task | None = None
@@ -739,6 +1129,30 @@ class EnsembleSession:
                 status = await self._call(session, "ensemble_state", {})
                 self._verify_startup_state(status)
                 phase = "room_events"
+                if not self._initial_idle_sent:
+                    self._last_state = "idle"
+                    self._last_source = "agent_state"
+                    initial_idle = self._presence("idle", source="agent_state")
+                    # Send and confirm this before advertising session
+                    # readiness, so a fast LiveKit state callback cannot
+                    # supersede the one startup idle event in the queue.
+                    try:
+                        value = await asyncio.wait_for(
+                            self._call(session, "ensemble_presence", initial_idle),
+                            timeout=MCP_EVENT_TIMEOUT_S,
+                        )
+                    except Exception:
+                        # Dispatch may have happened even when its receipt was
+                        # lost. Keep the same no-rearm quarantine as any other
+                        # unconfirmed presence operation.
+                        self._motion_fenced = True
+                        self._requires_operator_reconciliation = True
+                        raise
+                    if value.get("outcome") not in {"accepted", "duplicate"}:
+                        self._motion_fenced = True
+                        self._requires_operator_reconciliation = True
+                        raise RuntimeError("Puppeteer rejected initial idle presence")
+                    self._initial_idle_sent = True
                 if self._ready is not None and not self._ready.done():
                     self._ready.set_result(status)
                 next_refresh = time.monotonic() + 10.0
@@ -1005,6 +1419,9 @@ class EnsembleSession:
         self._closed = False
         self._ready = None
         self._motion_fenced = False
+        # A reopened transport has no fresh host-state observation yet. Do
+        # not replay stale idle/listening/speaking into a new device session.
+        self._last_state = None
         self._shutdown_result = None
         self._speech_capable = False
         self._native_gain_capable = False

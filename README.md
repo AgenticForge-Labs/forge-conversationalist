@@ -35,24 +35,53 @@ The worker requires Python 3.11–3.13; the example below uses Python 3.12 and `
    ```
 
    Configure `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` and a long random `CONVERSATIONALIST_ACCESS_TOKEN`. Choose a `CONVERSATIONALIST_PRESET` of `livekit`, `openrouter`, or `hybrid`; add `OPENROUTER_API_KEY` to the worker environment when needed.
-2. Install and start the worker:
+2. Install dependencies and download the LiveKit agent model files once:
 
    ```bash
    uv venv --python 3.12
    uv pip install --python .venv/bin/python -e '.[dev]'
    .venv/bin/python -m forge_conversationalist.agent download-files
-   .venv/bin/python -m forge_conversationalist.agent dev
    ```
 
-3. In another terminal, copy `web/.env.example` to `web/.env.local`, set its LiveKit and development access-token values, then run:
+3. Start the worker and web app together:
 
    ```bash
-   cd web
-   npm install
-   npm run dev
+   cd web && npm install && cd ..
+   uv run python scripts/dev.py
    ```
 
-   Visit [http://localhost:3000](http://localhost:3000). Keep OpenRouter, MCP and Hermes credentials in the trusted worker environment, not in the browser configuration.
+   Open [http://localhost:3000](http://localhost:3000). The launcher checks the existing LiveKit service first and prints a helpful error if it cannot reach it; it never starts Docker or LiveKit. It starts only the Conversationalist worker and web app, stops both on Ctrl-C, and exits if either process fails. It does not start another Puppeteer room owner or connect/arm hardware on its own. If `PUPPETEER_ENSEMBLE_CONFIG` is set, the launcher reports that fact; the worker retains its normal opt-in, room-owned integration behavior.
+
+   The worker reads the existing root `.env.local`. The web process gets only its required LiveKit and access-token settings, resolved from the shell environment first, then `web/.env.local`, then root `.env.local`; nothing is written or overwritten. `web/.env.local` is optional. Keep provider, MCP and Hermes credentials in the worker environment; the launcher does not pass them to the web process or print any credential values.
+
+Before starting a live worker, run the secret-safe local preflight:
+
+```bash
+uv run forge-conversationalist-preflight --env-file .env.local --check-livekit
+```
+
+It checks required setting names, the selected speech-provider configuration,
+and (when configured) Puppeteer's static operator config. It prints no values,
+starts no LiveKit session or MCP/SDK process, and does not prove remote
+credentials or hardware readiness. `--check-livekit` makes a read-only TCP
+reachability probe and reports an unreachable service; it does not
+authenticate. Once it reports
+`configuration_ready`, start the voice
+worker with `uv run forge-conversationalist dev`.
+
+To exercise the room client through Puppeteer's real MCP server implementation
+without LiveKit or hardware, run this one-command fake-provider demo from this
+checkout (the sibling `forge-puppeteer` checkout is used by default):
+
+```bash
+uv run python scripts/ensemble-demo.py
+```
+
+It starts Puppeteer's source-controlled in-memory ensemble fixture over stdio,
+checks the exact performer catalog, sends presence and a named gesture, then
+closes the room. Its output explicitly reports `physical_motion_dispatched: false`.
+This exercises the real room-to-MCP seam, but not cloud speech providers or
+connected hardware.
 
 Alternatively, run `.venv/bin/forge-conversationalist-audio --list-devices` and then `.venv/bin/forge-conversationalist-audio` to join with local system audio instead of a browser. See [setup and operational details](STATUS.md#archived-readme-development-notes) for the full configuration and device options.
 
