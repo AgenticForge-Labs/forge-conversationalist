@@ -34,6 +34,10 @@ STATES = frozenset({"idle", "listening", "speaking"})
 SPEECH_ENVELOPE_MAX_QUEUE = 12
 MCP_EVENT_TIMEOUT_S = 15.0
 SHUTDOWN_ACK_TIMEOUT_S = 8.0
+# A sleep move can take as long as the SDK's longest pinned segment (30 s) plus a re-check.
+MCP_PREPARE_TIMEOUT_S = 60.0
+PARK_TIMEOUT_S = 60.0
+PREPARE_ACTIONS = frozenset({"move_to_sleep", "confirm_at_sleep"})
 # An optional feature observation must never monopolize the one room MCP
 # pipe while a live user can interrupt speech and require Puppeteer's STOP.
 MCP_ENVELOPE_TIMEOUT_S = 0.35
@@ -497,6 +501,7 @@ class EnsembleSession:
         self, config: PuppeteerEnsembleConfig, *, room_id: str, caller_id: str,
         outgoing_speech_envelope: bool = False,
         native_gain_performer: str | None = None,
+        park_on_close: bool = True,
     ):
         if not room_id or not caller_id:
             raise ValueError("authorized LiveKit room and caller are required for physical ensemble")
@@ -517,6 +522,12 @@ class EnsembleSession:
         self._closed = False
         self._outgoing_speech_envelope = outgoing_speech_envelope
         self._speech_capable = False
+        # Optional Puppeteer tools; absent tools simply disable these paths.
+        self._park_on_close = park_on_close
+        self._park_capable = False
+        self._gate_capable = False
+        self._park_done = asyncio.Event()
+        self._park_summary: dict[str, object] | None = None
         self._native_gain_performer = native_gain_performer
         self._native_gain_capable = False
         self._native_pacer: NativeSpeechPacer | None = None
@@ -864,6 +875,37 @@ class EnsembleSession:
             raise RuntimeError("Puppeteer ensemble MCP result is unconfirmed")
         return response.structured_content
 
+    async def _park_after_disconnect(self, session, disconnect: object) -> None:
+        """End the session at the robots' sleep poses, once, and record what happened.
+
+        Only after Puppeteer acknowledged the disconnect (so no conversation is
+        active and the outcome of the last action is known). A fault stops it and is
+        reported; it is never retried here.
+        """
+        try:
+            if not (self._park_capable and isinstance(disconnect, dict)
+                    and disconnect.get("outcome") == "accepted"):
+                self._park_summary = {"outcome": "not_attempted"}
+                return
+            result = await asyncio.wait_for(
+                self._call(session, "ensemble_park", {"action_id": f"park-{uuid.uuid4().hex}"}),
+                timeout=PARK_TIMEOUT_S,
+            )
+            details = result.get("results")
+            self._park_summary = {
+                "outcome": str(result.get("outcome", "unknown")),
+                "performers": {
+                    name: str(item.get("outcome", "unknown"))
+                    for name, item in (details.items() if isinstance(details, dict) else ())
+                    if isinstance(item, dict)
+                },
+            }
+        except Exception:  # noqa: BLE001 - the park outcome is simply unknown
+            logger.warning("Puppeteer park outcome unconfirmed")
+            self._park_summary = {"outcome": "unknown", "reason": "park_unconfirmed"}
+        finally:
+            self._park_done.set()
+
     def _verify_startup_state(self, status: dict[str, object]) -> None:
         """Fail before any room presence when SDK/Puppeteer catalog differs."""
         performers = status.get("performers")
@@ -949,6 +991,8 @@ class EnsembleSession:
                     self._native_gain_performer is not None
                     and "ensemble_native_speech_gain" in names
                 )
+                self._park_capable = self._park_on_close and "ensemble_park" in names
+                self._gate_capable = {"ensemble_startup_check", "ensemble_prepare"} <= names
                 if self._outgoing_speech_envelope and not self._speech_capable:
                     logger.warning("Puppeteer does not support optional speech envelope; voice continues")
                 elif self._speech_capable:
@@ -1037,6 +1081,7 @@ class EnsembleSession:
                                 future.set_result(value)
                         except Exception:  # noqa: BLE001 - physical STOP may be unknown
                             logger.warning("Puppeteer ensemble disconnect outcome unconfirmed")
+                            value = None
                             if future is not None and not future.done():
                                 future.set_result({
                                     "outcome": "unknown", "reason": "disconnect_unconfirmed",
@@ -1050,6 +1095,7 @@ class EnsembleSession:
                                     "outcome": "unknown", "reason": "room_shutdown",
                                     "retry_safe": False,
                                 })
+                        await self._park_after_disconnect(session, value)
                         break
                     if tool == "ensemble_speech_envelope" and (
                         not self._speech_capable or self._motion_fenced
@@ -1088,6 +1134,7 @@ class EnsembleSession:
                             timeout=(
                                 MCP_ENVELOPE_TIMEOUT_S
                                 if tool in {"ensemble_speech_envelope", "ensemble_native_speech_gain"}
+                                else MCP_PREPARE_TIMEOUT_S if tool == "ensemble_prepare"
                                 else MCP_EVENT_TIMEOUT_S
                             ),
                         )
@@ -1178,6 +1225,7 @@ class EnsembleSession:
                 pacer.invalidate()
             self._native_pending.clear()
             self._native_armed = False
+            self._park_done.set()
             self._closed = True
             if self._ready is not None and not self._ready.done():
                 self._ready.set_exception(RuntimeError(f"Puppeteer ensemble startup failed in {phase}"))
@@ -1189,20 +1237,43 @@ class EnsembleSession:
                 raise
             logger.warning("Puppeteer ensemble MCP ended in %s: %s", phase, type(exc).__name__)
 
-    async def _request(self, tool: str, args: dict) -> dict:
+    async def _request(self, tool: str, args: dict, *, timeout: float = 15) -> dict:
         if self._closed or self._task is None or self._task.done():
             return {"outcome": "failed", "reason": "ensemble_unavailable", "retry_safe": False}
-        if self._motion_fenced and tool != "ensemble_state":
+        if self._motion_fenced and tool not in {"ensemble_state", "ensemble_startup_check"}:
             return {"outcome": "denied", "reason": "operator_reconciliation_required", "retry_safe": False}
         future = asyncio.get_running_loop().create_future()
         self._enqueue(tool, args, future)
         try:
-            return await asyncio.wait_for(future, timeout=15)
+            return await asyncio.wait_for(future, timeout=timeout)
         except (RuntimeError, TimeoutError):
             return {"outcome": "unknown", "reason": "outcome_unconfirmed", "retry_safe": False}
 
     async def status(self) -> dict:
         return await self._request("ensemble_state", {})
+
+    async def startup(self) -> dict:
+        """Read-only: is each real robot at its sleep position? Never moves anything."""
+        if not self._gate_capable:
+            return {"outcome": "unsupported", "reason": "startup_gate_not_available"}
+        return await self._request("ensemble_startup_check", {})
+
+    async def prepare(self, performer_id: str, action: str) -> dict:
+        """The user's answer to a startup question, for one pinned performer.
+
+        ``move_to_sleep`` runs one sleep move through Puppeteer's normal runtime and
+        re-checks; ``confirm_at_sleep`` is for robots that cannot measure their pose.
+        Never retried here: a lost receipt is reported as unconfirmed.
+        """
+        if (not isinstance(performer_id, str) or performer_id not in self.config.performer_ids
+                or action not in PREPARE_ACTIONS):
+            return {"outcome": "unsupported", "reason": "unknown_performer_or_action"}
+        if not self._gate_capable:
+            return {"outcome": "unsupported", "reason": "startup_gate_not_available"}
+        return await self._request("ensemble_prepare", {
+            "performer_id": performer_id, "action": action,
+            "action_id": f"sleep-{uuid.uuid4().hex}",
+        }, timeout=MCP_PREPARE_TIMEOUT_S + 5)
 
     async def express(self, name: str, performer_id: str) -> dict:
         """Request one exact catalogued finite expression for one pinned performer.
@@ -1251,6 +1322,10 @@ class EnsembleSession:
         self._last_state = None
         self._shutdown_result = None
         self._speech_capable = False
+        self._park_capable = False
+        self._gate_capable = False
+        self._park_done.clear()
+        self._park_summary = None
         self._native_gain_capable = False
         for pacer in self._native_pending.values():
             pacer.invalidate()
@@ -1309,6 +1384,11 @@ class EnsembleSession:
                         for name in self.config.performer_ids
                         if isinstance(statuses.get(name), dict)
                     }
+                if response.get("outcome") == "accepted" and self._park_capable:
+                    try:
+                        await asyncio.wait_for(self._park_done.wait(), timeout=PARK_TIMEOUT_S + 3)
+                    except TimeoutError:
+                        self._park_summary = {"outcome": "unknown", "reason": "park_unconfirmed"}
                 if response.get("outcome") == "accepted" and (
                     set(per_robot) == set(self.config.performer_ids)
                     and all(status == "idle" for status in per_robot.values())
@@ -1341,9 +1421,10 @@ class EnsembleSession:
             "performers": per_robot,
             "sdk_stop_command": "puppeteer_owned_disconnect",
             "neutral_request": "not_attempted",
-            "sleep_request": "not_attempted",
+            "sleep_request": (self._park_summary or {"outcome": "not_attempted"})["outcome"],
+            "sleep_performers": dict((self._park_summary or {}).get("performers", {})),
             "physical_settling": "unconfirmed",
-            "physical_sleep_verified": False,
+            "physical_sleep_verified": (self._park_summary or {}).get("outcome") == "parked",
             "retry_safe": False,
         }
         logger.info(
