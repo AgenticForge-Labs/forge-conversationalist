@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from v4_config import write_ensemble
 
 from forge_conversationalist.agent import _room_instructions
 from forge_conversationalist.assistant_tools import build_assistant_tools
@@ -23,23 +24,8 @@ from forge_conversationalist.ensemble import (
 from forge_conversationalist.integrations import Integrations, load_integrations
 
 
-def operator_file(tmp_path: Path, **overrides) -> Path:
-    data = {
-        "schema_version": 1,
-        "motion_authority": "I_AUTHORIZE_ENSEMBLE_ROBOT_MOTION",
-        "reachy": {"backend": "reachy_sdk", "device": "reachy", "instance_id": "reachy"},
-        "stackchan": {
-            "backend": "stackchan_sdk", "device": "stackchan", "instance_id": "stackchan"
-        },
-        "soarm101": {"instance_id": "soarm101", "mode": "simulation"},
-        "ownership_db": str(tmp_path / "owner.db"),
-        "action_journal": str(tmp_path / "action.db"),
-        "reachy_neutral_head": str(tmp_path / "head.json"),
-    }
-    data.update(overrides)
-    path = tmp_path / "ensemble.json"
-    path.write_text(json.dumps(data), encoding="utf-8")
-    return path
+def operator_file(tmp_path: Path, **kwargs) -> Path:
+    return write_ensemble(tmp_path, **kwargs)
 
 
 def test_ensemble_presence_source_is_explicitly_validated(tmp_path):
@@ -67,19 +53,20 @@ def test_native_ensemble_disabled_by_default_and_no_new_agent_identity(tmp_path)
     )
 
 
-@pytest.mark.parametrize("changes", [
-    {"motion_authority": None},
-    {"schema_version": True},
-    {"schema_version": 2},
-    {"reachy": {"backend": "fake", "device": "reachy", "instance_id": "reachy"}},
-    {"stackchan": {"backend": "fake", "device": "stackchan", "instance_id": "stackchan"}},
-    {"soarm101": {"instance_id": "soarm101", "mode": "unknown"}},
-    {"ownership_db": "relative.db"},
-    {"reachy_neutral_head": "relative.json"},
-    {"action_journal": "/tmp/shared.db", "ownership_db": "/tmp/shared.db"},
+@pytest.mark.parametrize("kwargs", [
+    {"ensemble": {"physical": None}},
+    {"physical": False},  # Reachy and StackChan are real robots
+    {"ensemble": {"schema_version": True}},
+    {"ensemble": {"schema_version": 3}},
+    {"providers": {"reachy": {"backend": "fake"}}},
+    {"providers": {"stackchan": {"backend": "fake"}}},
+    {"providers": {"soarm101": {"mode": "unknown"}}},
+    {"ensemble": {"ownership_db": "relative.db"}},
+    {"ensemble": {"reachy_neutral_head": "relative.json"}},
+    {"ensemble": {"action_journal": "/tmp/shared.db", "ownership_db": "/tmp/shared.db"}},
 ])
-def test_operator_configuration_denies_missing_authority_or_native_identity(tmp_path, changes):
-    path = operator_file(tmp_path, **changes)
+def test_operator_configuration_denies_missing_authority_or_native_identity(tmp_path, kwargs):
+    path = operator_file(tmp_path, **kwargs)
     with pytest.raises((ValueError, TypeError)):
         load_integrations({"PUPPETEER_ENSEMBLE_CONFIG": str(path)})
 
@@ -92,18 +79,9 @@ def test_operator_file_digest_detects_changes(tmp_path):
         config.require_unchanged()
 
 
-def test_reachy_only_ensemble_requires_explicit_schema(tmp_path):
-    path = operator_file(tmp_path)
-    data = json.loads(path.read_text())
-    data.update(schema_version=2)
-    del data["stackchan"]
-    del data["soarm101"]
-    path.write_text(json.dumps(data))
+def test_single_robot_ensemble_is_a_one_performer_ensemble(tmp_path):
+    path = operator_file(tmp_path, kinds=("reachy",))
     assert PuppeteerEnsembleConfig(path).performer_ids == ("reachy",)
-    data["soarm101"] = {}
-    path.write_text(json.dumps(data))
-    with pytest.raises(ValueError):
-        PuppeteerEnsembleConfig(path)
 
 
 def test_native_ensemble_is_exclusive_of_legacy_reachy_and_fake_puppeteer(tmp_path):
@@ -366,12 +344,7 @@ def test_audio_ingress_is_inert_without_capability_and_explicit_opt_in(tmp_path)
 
 
 def duo_operator_file(tmp_path: Path) -> Path:
-    path = operator_file(tmp_path)
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["schema_version"] = 3
-    payload.pop("soarm101")
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    return path
+    return write_ensemble(tmp_path, kinds=("reachy", "stackchan"))
 
 
 def test_duo_uses_exact_two_robot_catalog_without_dummy_soarm(tmp_path):
@@ -381,16 +354,10 @@ def test_duo_uses_exact_two_robot_catalog_without_dummy_soarm(tmp_path):
     configured = load_integrations({"PUPPETEER_ENSEMBLE_CONFIG": str(path)})
     assert configured.ensemble is not None
     assert configured.ensemble.performer_ids == ("reachy", "stackchan")
-    for field in (None, {}, {"instance_id": "soarm101", "mode": "simulation"}):
-        data = json.loads(path.read_text())
-        data["soarm101"] = field
-        path.write_text(json.dumps(data))
-        with pytest.raises(ValueError, match="SO-ARM101"):
-            PuppeteerEnsembleConfig(path)
-    data.pop("soarm101")
-    data["stackchan"]["instance_id"] = "reachy"
+    data = json.loads(path.read_text())
+    data["robots"][1]["id"] = "reachy"
     path.write_text(json.dumps(data))
-    with pytest.raises(ValueError, match="unique performer"):
+    with pytest.raises(ValueError, match="unique|mismatch"):
         PuppeteerEnsembleConfig(path)
 
 

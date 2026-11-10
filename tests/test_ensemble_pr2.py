@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from v4_config import write_ensemble
 
 from forge_conversationalist.ensemble import (
     EnsembleSession,
@@ -24,44 +25,19 @@ from forge_conversationalist.text_hook import ConversationStateChanged
 REVISION = "sha256:" + "a" * 64
 
 
-def operator_config(tmp_path: Path, *, duo=True, **extra) -> Path:
-    payload = {
-        "schema_version": 3 if duo else 2,
-        "motion_authority": "I_AUTHORIZE_ENSEMBLE_ROBOT_MOTION",
-        "reachy": {
-            "backend": "reachy_sdk", "device": "reachy",
-            "instance_id": "reachy", "allowed_tools": [
-                "head_pose", "pose_and_antennas", "play_move", "device_stop",
-            ],
-            "physical_authority": "I_AUTHORIZE_REACHY_CONTROL",
-        },
-        "reachy_neutral_antennas_rad": [-0.17, 0.17],
-        "reachy_neutral_head": str(tmp_path / "operator-neutral.json"),
-        "action_journal": str(tmp_path / "actions.sqlite3"),
-        "ownership_db": str(tmp_path / "owners.sqlite3"),
-        "speech_driven_performers": ["reachy", "stackchan"] if duo else ["reachy"],
-        "motion_profiles": {
-            "reachy": {"idle": "smooth_v2", "speaking": "smooth_v2"},
-        },
-    }
+def operator_config(tmp_path: Path, *, duo=True, reachy_options=None, stackchan_options=None,
+                    **kwargs) -> Path:
+    """A duo (Reachy + StackChan) or Reachy-only schema-v4 ensemble with speech-driven motion."""
+    reachy = {"speaking": "smooth_v2", "speech_driven": True, "neutral_antennas_rad": [-0.17, 0.17]}
+    if reachy_options is not None:
+        reachy = reachy_options
+    options = {"reachy": reachy}
+    kinds = ("reachy",)
     if duo:
-        payload["stackchan"] = {
-            "backend": "stackchan_sdk", "device": "stackchan",
-            "instance_id": "stackchan",
-            "allowed_tools": ["head_move", "face_update", "device_stop"],
-            "physical_authority": "I_AUTHORIZE_STACKCHAN_CONTROL",
-        }
-        payload["motion_profiles"]["stackchan"] = {
-            "idle": "native_v1", "speaking": "smooth_v2",
-        }
-    payload.update(extra)
-    (tmp_path / "operator-neutral.json").write_text(json.dumps([
-        [1, 0, 0, 0], [0, 1, 0, 0],
-        [0, 0, 1, 0], [0, 0, 0, 1],
-    ]))
-    path = tmp_path / "approved.json"
-    path.write_text(json.dumps(payload))
-    return path
+        kinds = ("reachy", "stackchan")
+        options["stackchan"] = stackchan_options if stackchan_options is not None else {
+            "speaking_mode": "native_weight", "speech_driven": True}
+    return write_ensemble(tmp_path, kinds, options=options, name="approved.json", **kwargs)
 
 
 def test_static_preflight_is_nonmoving_and_does_not_open_devices(tmp_path, capsys):
@@ -71,8 +47,9 @@ def test_static_preflight_is_nonmoving_and_does_not_open_devices(tmp_path, capsy
     assert report["outcome"] == "static_config_valid"
     assert report["performer_ids"] == ["reachy", "stackchan"]
     assert report["motion_profiles"]["reachy"] == {
-        "idle": "smooth_v2", "speaking": "smooth_v2",
+        "idle": "legacy", "speaking": "smooth_v2",
     }
+    assert report["speech_driven_performers"] == ["reachy", "stackchan"]
     assert all(report[key] is False for key in (
         "sdk_connections_opened", "physical_motion_dispatched",
         "physical_neutral_verified", "physical_stop_verified",
@@ -85,70 +62,61 @@ def test_static_preflight_is_nonmoving_and_does_not_open_devices(tmp_path, capsy
         config.preflight()
 
 
+def _set_reachy_options(path, **changes):
+    robot = path.parent / "reachy.json"
+    data = json.loads(robot.read_text())
+    data.setdefault("options", {}).update(changes)
+    robot.write_text(json.dumps(data))
+
+
 def test_legacy_speech_fallback_requires_explicit_boolean_and_smooth_profile(tmp_path):
-    path = operator_config(tmp_path, duo=False, reachy_legacy_speech_fallback=True)
+    path = operator_config(tmp_path, duo=False)
+    _set_reachy_options(path, legacy_speech_fallback=True)
     assert PuppeteerEnsembleConfig(path).preflight()["outcome"] == "static_config_valid"
-    data = json.loads(path.read_text())
-    data["reachy_legacy_speech_fallback"] = "true"
-    path.write_text(json.dumps(data))
-    with pytest.raises(ValueError, match="boolean"):
+    _set_reachy_options(path, legacy_speech_fallback="true")
+    with pytest.raises(ValueError, match="true or false"):
         PuppeteerEnsembleConfig(path)
-    data["reachy_legacy_speech_fallback"] = True
-    data["motion_profiles"]["reachy"]["speaking"] = "legacy"
-    path.write_text(json.dumps(data))
+    _set_reachy_options(path, legacy_speech_fallback=True, speaking="default")
     with pytest.raises(ValueError, match="smooth_v2"):
         PuppeteerEnsembleConfig(path)
 
 
-def test_original_idle_preflight_requires_grant_authority_and_original_neutral(tmp_path):
-    path = operator_config(tmp_path, duo=False,
-                           motion_profiles={"reachy": {"idle": "original_v1"}})
+def test_original_idle_preflight_requires_grant_and_original_neutral(tmp_path):
+    path = operator_config(tmp_path, duo=False, reachy_options={"idle": "original_v1"},
+                           providers={"reachy": {"allowed_tools": [
+                               "head_pose", "play_move", "device_stop"]}})
     with pytest.raises(ValueError, match="original_idle grant"):
         PuppeteerEnsembleConfig(path)
-    data = json.loads(path.read_text())
-    data["reachy"]["allowed_tools"].append("original_idle")
-    data["reachy_original_idle_authority"] = "I_AUTHORIZE_REACHY_ORIGINAL_IDLE"
-    path.write_text(json.dumps(data))
+    path = operator_config(tmp_path, duo=False, reachy_options={"idle": "original_v1"})
     assert PuppeteerEnsembleConfig(path).preflight()["outcome"] == "static_config_valid"
-    neutral = tmp_path / "operator-neutral.json"
+    neutral = tmp_path / "head.json"
     neutral.write_text(json.dumps([[1, 0, 0, 0.01], [0, 1, 0, 0],
                                    [0, 0, 1, 0], [0, 0, 0, 1]]))
     with pytest.raises(ValueError, match="identity neutral"):
         PuppeteerEnsembleConfig(path).preflight()
 
 
-def test_original_speech_preflight_requires_separate_authority(tmp_path):
-    path = operator_config(tmp_path, duo=False, motion_profiles={
-        "reachy": {"idle": "original_v1", "speaking": "original_v1"},
-    })
-    data = json.loads(path.read_text())
-    data["reachy"]["allowed_tools"].append("original_idle")
-    data["reachy_original_idle_authority"] = "I_AUTHORIZE_REACHY_ORIGINAL_IDLE"
-    path.write_text(json.dumps(data))
-    with pytest.raises(ValueError, match="original_speech grant"):
-        PuppeteerEnsembleConfig(path)
-    data["reachy"]["allowed_tools"].append("original_speech")
-    data["reachy_original_speech_authority"] = "I_AUTHORIZE_REACHY_ORIGINAL_SPEECH"
-    path.write_text(json.dumps(data))
-    report = PuppeteerEnsembleConfig(path).preflight()
-    assert report["motion_profiles"]["reachy"]["speaking"] == "original_v1"
-    assert report["physical_motion_dispatched"] is False
+def test_smooth_speaking_requires_the_compound_pose_grant_and_reviewed_antennas(tmp_path):
+    no_grant = {"reachy": {"allowed_tools": ["head_pose", "play_move", "device_stop"]}}
+    with pytest.raises(ValueError, match="pose_and_antennas"):
+        PuppeteerEnsembleConfig(operator_config(tmp_path, duo=False, providers=no_grant))
+    with pytest.raises(ValueError, match="neutral_antennas_rad"):
+        PuppeteerEnsembleConfig(operator_config(
+            tmp_path, duo=False, reachy_options={"speaking": "smooth_v2", "speech_driven": True}))
 
 
-@pytest.mark.parametrize("patch", [
-    {"motion_profiles": {"unknown": {"idle": "native_v1"}}},
-    {"motion_profiles": {"reachy": {"speaking": "magic"}}},
-    {"motion_profiles": {"reachy": {"idle": "native_v1", "raw_servo": True}}},
-    {"motion_profiles": {"reachy": {"speaking": "smooth_v2"}},
-     "speech_driven_performers": []},
-    {"motion_profiles": {"reachy": {"idle": "native_v1"}},
-     "reachy_neutral_antennas_rad": None},
-    {"speech_driven_performers": ["reachy", "reachy"]},
-    {"speech_driven_performers": ["soarm101"]},
-    {"motion_profiles": {"reachy": ["native_v1"]}},
+@pytest.mark.parametrize("reachy,stackchan", [
+    ({"speaking": "magic"}, None),
+    ({"idle": "native_v1"}, None),
+    ({"speaking": "original_v1"}, None),
+    ({"idle": "default", "raw_servo": True}, None),
+    ({"speaking": "smooth_v2", "speech_driven": False, "neutral_antennas_rad": [-0.17, 0.17]}, None),
+    ({"speech_driven": "yes"}, None),
+    ({"speaking": "default"}, {"speaking_mode": "loud"}),
+    ({"speaking": "default"}, {"speech_driven": 1}),
 ])
-def test_static_profile_preflight_denies_unsafe_changes(tmp_path, patch):
-    path = operator_config(tmp_path, **patch)
+def test_static_profile_preflight_denies_unsafe_changes(tmp_path, reachy, stackchan):
+    path = operator_config(tmp_path, reachy_options=reachy, stackchan_options=stackchan or {})
     with pytest.raises((ValueError, TypeError)):
         PuppeteerEnsembleConfig(path)
 

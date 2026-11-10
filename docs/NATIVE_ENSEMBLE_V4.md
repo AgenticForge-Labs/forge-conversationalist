@@ -9,7 +9,8 @@ Conversationalist validates unique kinds and IDs, exact file identity, native
 provider/backend identity, selected performer IDs, and absolute shared journal
 paths before launching the room. It hashes the referenced bytes so edits after
 preflight invalidate the operator config. The same Puppeteer MCP room and SDK
-authority rules apply. Schemas 1–3 remain supported unchanged. See Puppeteer's
+authority rules apply. Only schema 4 is supported; convert older files with Puppeteer's
+`scripts/migrate-room-config.py`. See Puppeteer's
 `docs/ENSEMBLE_V4.md` for the room example.
 
 The room file carries `"physical": true` (real robots) or `false` (simulated

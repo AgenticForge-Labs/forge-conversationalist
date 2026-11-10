@@ -40,21 +40,23 @@ def _demo_config(root: Path, work: Path) -> tuple[Path, Path]:
     neutral.write_text(json.dumps([
         [1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1],
     ]), encoding="utf-8")
+    providers = {
+        "reachy": {"backend": "reachy_sdk", "device": "reachy", "instance_id": "reachy",
+                   "allowed_tools": ["head_pose", "play_move", "device_stop"]},
+        "stackchan": {"backend": "stackchan_sdk", "device": "stackchan", "instance_id": "stackchan",
+                      "allowed_tools": ["head_move", "face_update", "device_stop"]},
+        "soarm101": {"instance_id": "soarm101", "mode": "existing_broker",
+                     "broker_url": "http://127.0.0.1:8765", "token_env": "SOARM_TOKEN",
+                     "allowed_tools": ["robot_capabilities", "robot_state", "stop"]},
+    }
+    for kind, provider in providers.items():
+        (work / f"{kind}.json").write_text(json.dumps(
+            {"kind": kind, "id": kind, "provider": provider}), encoding="utf-8")
     config = work / "ensemble.json"
     config.write_text(json.dumps({
-        "schema_version": 1,
-        "motion_authority": "I_AUTHORIZE_ENSEMBLE_ROBOT_MOTION",
-        "reachy": {
-            "backend": "reachy_sdk", "device": "reachy", "instance_id": "reachy",
-            "physical_authority": "I_AUTHORIZE_REACHY_CONTROL",
-            "allowed_tools": ["head_pose", "play_move", "device_stop"],
-        },
-        "stackchan": {
-            "backend": "stackchan_sdk", "device": "stackchan", "instance_id": "stackchan",
-            "physical_authority": "I_AUTHORIZE_STACKCHAN_CONTROL",
-            "allowed_tools": ["head_move", "face_update", "device_stop"],
-        },
-        "soarm101": {"instance_id": "soarm101", "mode": "simulation"},
+        "schema_version": 4,
+        "physical": True,
+        "robots": [{"kind": kind, "id": kind, "file": f"{kind}.json"} for kind in providers],
         "action_journal": str(work / "actions.sqlite3"),
         "ownership_db": str(work / "owners.sqlite3"),
         "reachy_neutral_head": str(neutral),
