@@ -19,6 +19,7 @@ mail-streams = ["hatchet-sdk>=1.44,<2"]
 forge-conversationalist = "forge_conversationalist.agent:main"
 forge-conversationalist-audio = "forge_conversationalist.local_audio:main"
 forge-conversationalist-ensemble-preflight = "forge_conversationalist.ensemble_preflight:main"
+forge-conversationalist-preflight = "forge_conversationalist.startup_preflight:main"
 
 [build-system]
 requires = ["hatchling>=1.25"]

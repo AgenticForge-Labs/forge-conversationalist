@@ -257,6 +257,7 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(
     assert [e["value"]["performer_ids"] for e in logged if e["kind"] == "expression"] == [["reachy"]]
     presence = [e["value"] for e in logged if e["kind"] == "presence"]
     assert presence[-1]["state"] == "disconnected"
+    assert presence[0]["state"] == "idle"
     assert any(x["interrupted"] for x in presence[:-1])
     assert [x["sequence"] for x in presence] == sorted(x["sequence"] for x in presence)
     interrupted_index = next(i for i, x in enumerate(presence) if x["interrupted"])
@@ -266,7 +267,9 @@ async def test_native_ensemble_mcp_stdio_one_room_events_no_secret_forwarding(
     enqueued = [r for r in caplog.records if r.msg == "puppeteer_presence_enqueued"]
     calls = [r for r in caplog.records if r.msg == "puppeteer_presence_call_started"]
     acks = [r for r in caplog.records if r.msg == "puppeteer_presence_call_completed"]
-    assert [r.sequence for r in enqueued] == [0, 1, 2]
+    # Startup idle is synchronously acknowledged before start() returns; the
+    # later LiveKit observations retain their ordered sequence numbers.
+    assert [r.sequence for r in enqueued] == [1, 2, 3]
     assert [r.sequence for r in calls] == sorted(r.sequence for r in calls)
     assert [r.sequence for r in acks] == [r.sequence for r in calls]
     assert all(r.session_id == "livekit-one-room" for r in enqueued + calls + acks)

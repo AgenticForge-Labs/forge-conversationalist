@@ -280,6 +280,26 @@ async def test_transport_lost_before_close_requires_operator_review(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_reconnect_does_not_replay_stale_presence_or_repeat_startup_idle(tmp_path):
+    room = EnsembleSession(
+        PuppeteerEnsembleConfig(operator_config(tmp_path)),
+        room_id="room", caller_id="owner",
+    )
+    room._last_state = "idle"
+    room._initial_idle_sent = True
+    room.close = AsyncMock(return_value={"outcome": "acknowledged"})
+
+    async def started():
+        return {"state": "disconnected"}
+
+    room.start = started
+    assert await room.reconnect() == {"state": "disconnected"}
+    assert room._last_state is None
+    assert room._initial_idle_sent is True
+    assert room._queue.empty()
+
+
+@pytest.mark.anyio
 async def test_authorized_owner_departure_requests_only_one_bounded_close():
     events = {}
     fake = SimpleNamespace(
