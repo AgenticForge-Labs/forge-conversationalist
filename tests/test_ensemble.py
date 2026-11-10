@@ -55,7 +55,8 @@ def test_native_ensemble_disabled_by_default_and_no_new_agent_identity(tmp_path)
         "soarm101": {"status": "idle", "expressions": ["yes", "no", "curious"]},
         "reachy": {"status": "unavailable", "expressions": ["yes"]},
     }})
-    assert roster == "Connected robots and their approved gestures: soarm101 (yes, no, curious)."
+    assert roster == ("Your body and its approved gestures, by tool id (never say the ids aloud): "
+                      "soarm101: yes (nod yes), no (shake my head no), curious (look curious).")
     assert "own call" in _room_instructions(configured, caller_id="operator", session_id="room")
     assert roster in _room_instructions(
         configured, caller_id="operator", session_id="room", robot_roster=roster)
@@ -188,7 +189,7 @@ def test_ensemble_agent_tools_only_status_and_exact_explicit_gestures(tmp_path):
         result = json.loads(await registered["request_ensemble_gesture"]("yes", "reachy"))
         assert result["outcome"] == "accepted" and result["expression"] == "yes"
         assert result["completion"] == "unconfirmed"
-        assert "not confirmed complete" in result["spoken_guidance"]
+        assert "do not say it finished" in result["spoken_guidance"]
 
     asyncio.run(run())
     assert stub.prepared == [("reachy", "move_to_sleep")]
@@ -576,7 +577,7 @@ def test_roster_explains_how_a_resting_arm_is_woken():
     roster = _robot_roster({"performers": {
         "soarm101": {"status": "idle", "expressions": ["yes", "sleep2", "neutral"]},
         "reachy": {"status": "idle", "expressions": ["yes"]}}})
-    assert "sleep2 lays the arm down" in roster and "neutral wakes it back up" in roster
-    assert "reachy" not in roster.split("For ")[1]
+    assert "sleep2 lays it down to rest" in roster and "neutral wakes it" in roster
+    assert "reachy" not in roster.split("For ")[1].split(",")[0]
     plain = _robot_roster({"performers": {"soarm101": {"status": "idle", "expressions": ["yes"]}}})
     assert "sleep2" not in plain

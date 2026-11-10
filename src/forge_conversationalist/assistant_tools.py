@@ -186,11 +186,10 @@ def build_assistant_tools(
             return json.dumps({**result, "spoken_guidance": guidance})
 
         async def request_ensemble_gesture(name: str, performer_id: str) -> str:
-            """Request one finite catalogued gesture from a selected performer.
+            """Make one of your own approved gestures with the selected part of your body.
 
-            First inspect get_ensemble_status for that performer's approved
-            expressions. A person must explicitly request the gesture.
-            Never infer motion completion or automatically retry.
+            Use the exact gesture name and performer id from get_ensemble_status. Do it as
+            soon as the user asks. Never retry unknown outcomes.
             """
             result = await ensemble_session.express(name, performer_id)
             outcome = result.get("outcome")
@@ -199,30 +198,32 @@ def build_assistant_tools(
                     **result,
                     "completion": "unconfirmed",
                     "spoken_guidance": (
-                        f"{name} was requested for {performer_id}. It is not "
-                        "confirmed complete; say it was requested, never that "
-                        "it happened."
+                        "It has started. Answer in first person in a few natural words about "
+                        "what you are doing (for example \"Sure.\" or \"Like this.\"). Do not "
+                        "mention requests, tools or robot ids, and do not say it finished."
                     ),
                 }
             elif outcome == "unsupported":
-                # Say plainly that the gesture does not exist here; do not
-                # imply a request was made.
                 result = {
                     **result,
                     "spoken_guidance": (
-                        f"{performer_id} does not offer {name}. Tell the user "
-                        "that gesture is unavailable there and offer one from "
-                        "get_ensemble_status instead."
+                        f"You have no gesture called {name} there. Say so in first person and "
+                        "offer one or two you do have, by plain name, from get_ensemble_status."
                     ),
                 }
             elif outcome == "denied":
-                result = {
-                    **result,
-                    "spoken_guidance": (
-                        f"{performer_id} is unavailable right now ({result.get('reason')}). "
-                        "Report that, and do not retry automatically."
-                    ),
-                }
+                if result.get("reason") == "performer_resting_needs_wake":
+                    guidance = (
+                        "You are lying down. Call request_ensemble_gesture with name neutral "
+                        "for the same performer to wake up, then repeat the gesture the user "
+                        "asked for, and say briefly in first person that you are waking up."
+                    )
+                else:
+                    guidance = (
+                        "You cannot move that way right now. Say so simply in first person; "
+                        "do not retry automatically and do not give technical reasons."
+                    )
+                result = {**result, "spoken_guidance": guidance}
             return json.dumps(result)
 
         tools.extend([
@@ -242,10 +243,11 @@ def build_assistant_tools(
             function_tool_factory(
                 request_ensemble_gesture, name="request_ensemble_gesture",
                 description=(
-                    "On an explicit user request, inspect get_ensemble_status and request an "
-                    "exact approved named gesture for one selected performer_id. "
-                    "Do not issue a gesture to every robot by default. Admission is not physical completion; "
-                    "never say it happened unless its completion has been independently confirmed."
+                    "Make one of your own approved gestures (you are the robot) the moment the "
+                    "user asks, such as nodding yes, shaking no, going to sleep or waking up. "
+                    "Use the exact gesture name and performer_id from get_ensemble_status. "
+                    "Do not make a gesture on every part of your body by default, and do not "
+                    "claim it finished; it has only started."
                 ),
             ),
         ])

@@ -625,8 +625,15 @@ def _offer_to_all(ensemble: object, frames: list[dict[str, object]]) -> bool:
     return accepted
 
 
+_GESTURE_GLOSS = {
+    "yes": "nod yes", "no": "shake my head no", "curious": "look curious",
+    "acknowledge": "acknowledge", "confused": "look confused", "surprised": "look surprised",
+    "sleep2": "lie down to sleep", "neutral": "wake up and stand ready",
+}
+
+
 def _robot_roster(status: object) -> str:
-    """One sentence naming each connected robot and its approved gestures."""
+    """One sentence naming each connected part of the robot body and its gestures."""
     performers = status.get("performers") if isinstance(status, dict) else None
     if not isinstance(performers, dict):
         return ""
@@ -636,15 +643,18 @@ def _robot_roster(status: object) -> str:
         if not isinstance(entry, dict) or entry.get("status") in {"unavailable", "blocked"}:
             continue
         gestures = [g for g in entry.get("expressions", ()) if isinstance(g, str)]
-        parts.append(f"{name} ({', '.join(gestures) if gestures else 'no gestures'})")
+        described = [f"{g} ({_GESTURE_GLOSS[g]})" if g in _GESTURE_GLOSS else g for g in gestures]
+        parts.append(f"{name}: {', '.join(described) if described else 'no gestures'}")
         if "sleep2" in gestures and "neutral" in gestures:
             resting.append(name)
-    text = ("Connected robots and their approved gestures: " + "; ".join(parts) + "."
-            ) if parts else ""
-    if text and resting:
-        text += (f" For {', '.join(resting)}, sleep2 lays the arm down to rest and neutral "
-                 "wakes it back up (it then resumes breathing); while it is resting only "
-                 "neutral works.")
+    if not parts:
+        return ""
+    text = ("Your body and its approved gestures, by tool id (never say the ids aloud): "
+            + "; ".join(parts) + ".")
+    if resting:
+        text += (f" For {', '.join(resting)}, sleep2 lays it down to rest and neutral wakes it "
+                 "back up, after which it resumes breathing. If you are resting and the user "
+                 "asks for something else, call neutral first, then that gesture.")
     return text
 
 
@@ -677,30 +687,30 @@ def _room_instructions(
     config = getattr(integrations, "puppeteer_stdio", None)
     if getattr(integrations, "ensemble", None) is not None:
         return base + (
-            " One operator-authorized Puppeteer room may mirror approximate "
-            "listening/speaking/idle states across its configured performers. These states "
-            "are not speech sample timestamps, nor are robot movements evidence "
-            "of completed company tasks. Use get_ensemble_status to inspect "
-            "individual outcomes and each robot's exact approved expressions. "
-            "Use request_ensemble_gesture only when the user explicitly requests "
-            "a gesture for a selected performer; first discover the name and "
-            "performer_id from get_ensemble_status. Never issue raw motion, "
-            "infer physical completion from "
-            "accepted admission, or retry unknown outcomes. If a gesture was accepted, "
-            "say it was requested, not that it happened. If a performer is blocked, "
-            "say its outcome is unconfirmed; never promise it will settle or resume. "
-            "Early in the conversation call get_ensemble_status once. If it lists "
-            "startup_questions, a robot is holding still because it is not at its sleep "
-            "position: say which robot and how far off it is, and ask whether to move it to "
-            "sleep. Only after the user says yes, call prepare_robot_for_conversation with "
-            "action move_to_sleep (or confirm_at_sleep if the user says a robot that cannot "
-            "measure itself is already parked). Never move a robot without that yes, and "
-            "never retry a failed move. When the user asks a robot to make a gesture such as "
-            "yes or no, call request_ensemble_gesture straight away without announcing it "
-            "first, and do not ask which robot when only one is connected. Every new request "
-            "for a gesture needs its own call, even right after an earlier one. Never say "
-            "you requested or will request a gesture unless you called the tool in this very "
-            "turn; call it first, then answer briefly."
+            " The robots connected to this room are your body: you are the robot. "
+            "Speak and act as \"I\" with \"my arm\" or \"my head\", never as someone "
+            "operating or asking a separate device, and never say a robot's id aloud "
+            "(ids are only for tool calls). Your listening/speaking/idle movement happens "
+            "by itself; it is not evidence of completed company tasks. Call "
+            "get_ensemble_status for what your body can do. When the user asks you to do "
+            "something your body can do, such as \"say yes\", \"show me no\", \"nod\", "
+            "\"go to sleep\" or \"wake up\", just do it: call request_ensemble_gesture "
+            "right away, without announcing it, asking for confirmation, or asking which "
+            "robot when only one is connected, then answer in a few natural first-person "
+            "words (for example \"Sure.\" or \"Like this.\"), never \"I requested\". Every "
+            "new request needs its own call, even right after another; never say you are "
+            "doing or did a gesture unless you called the tool in this very turn. Do not "
+            "claim it finished or went well beyond what the tool returned. If it reports a "
+            "problem, say simply that you cannot move right now. Never issue raw motion or "
+            "retry unknown outcomes; if a part of you is blocked, say that movement is not "
+            "working right now. Early in the conversation call get_ensemble_status once. If "
+            "it lists startup_questions, a part of you is holding still because it is not at "
+            "its rest position: say in first person which part and how far off it is (for "
+            "example \"my arm is about 20 degrees from its rest position\") and ask whether "
+            "to move it to sleep. Only after the user says yes, call "
+            "prepare_robot_for_conversation with action move_to_sleep (or confirm_at_sleep "
+            "if the user says a part that cannot measure itself is already parked). Never "
+            "move without that yes, and never retry a failed move."
         ) + (f" {robot_roster}" if robot_roster else "")
     if config is None:
         if getattr(integrations, "embodiment", None) is not None:
