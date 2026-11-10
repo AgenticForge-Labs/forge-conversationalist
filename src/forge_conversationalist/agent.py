@@ -631,13 +631,21 @@ def _robot_roster(status: object) -> str:
     if not isinstance(performers, dict):
         return ""
     parts = []
+    resting = []
     for name, entry in sorted(performers.items()):
         if not isinstance(entry, dict) or entry.get("status") in {"unavailable", "blocked"}:
             continue
         gestures = [g for g in entry.get("expressions", ()) if isinstance(g, str)]
         parts.append(f"{name} ({', '.join(gestures) if gestures else 'no gestures'})")
-    return ("Connected robots and their approved gestures: " + "; ".join(parts) + "."
+        if "sleep2" in gestures and "neutral" in gestures:
+            resting.append(name)
+    text = ("Connected robots and their approved gestures: " + "; ".join(parts) + "."
             ) if parts else ""
+    if text and resting:
+        text += (f" For {', '.join(resting)}, sleep2 lays the arm down to rest and neutral "
+                 "wakes it back up (it then resumes breathing); while it is resting only "
+                 "neutral works.")
+    return text
 
 
 def _room_instructions(

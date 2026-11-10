@@ -570,3 +570,13 @@ def test_urgent_presence_keeps_its_slot_behind_envelope_batches(tmp_path):
     assert "ensemble_presence" in tools
     assert room._queue.qsize() == 0
     assert room._closed is False
+
+
+def test_roster_explains_how_a_resting_arm_is_woken():
+    roster = _robot_roster({"performers": {
+        "soarm101": {"status": "idle", "expressions": ["yes", "sleep2", "neutral"]},
+        "reachy": {"status": "idle", "expressions": ["yes"]}}})
+    assert "sleep2 lays the arm down" in roster and "neutral wakes it back up" in roster
+    assert "reachy" not in roster.split("For ")[1]
+    plain = _robot_roster({"performers": {"soarm101": {"status": "idle", "expressions": ["yes"]}}})
+    assert "sleep2" not in plain
