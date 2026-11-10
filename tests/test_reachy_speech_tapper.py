@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from forge_conversationalist.reachy_speech_tapper import (
     HOP_MS,
     SWAY_A_PITCH_DEG,
@@ -23,6 +25,27 @@ from forge_conversationalist.speech_envelope import SpeechEnvelopeAnalyzer
 
 SAMPLE_RATE = 24000
 HOP_SAMPLES = int(SAMPLE_RATE * HOP_MS / 1000)
+
+
+def test_tapper_matches_pinned_sdk_reference_for_window_phase_and_release():
+    """Golden values captured from reachy-mini 1.10.0rc5 SwayRollRT, seed 7."""
+    tapper = SpeechTapper(sample_rate=SAMPLE_RATE)
+    inputs = [
+        [0.4] * 720 + [0.0] * 480,
+        [0.25] * HOP_SAMPLES,
+        [0.25] * HOP_SAMPLES,
+        [0.0] * HOP_SAMPLES,
+    ]
+    expected = [
+        (0, 0, 0, 0, 0, 0),
+        (0.005604454297224592, 0.003867986579454588, -0.001671080125010955,
+         -0.027372167711966128, -0.08103546606354095, -0.043390329170689655),
+        (0.006257070809183545, 0.003912067068676745, -0.001684290982021629,
+         -0.01015393204038672, -0.030871359069901044, -0.0148308439715694),
+        (0, 0, 0, 0, 0, 0),
+    ]
+    for samples, reference in zip(inputs, expected, strict=True):
+        assert tapper.feed(samples)[0] == pytest.approx(reference, abs=1e-12)
 
 
 def tone(amplitude: float) -> list[float]:

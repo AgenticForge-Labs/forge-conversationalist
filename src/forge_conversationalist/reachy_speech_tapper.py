@@ -1,9 +1,10 @@
 """Plain-Python port of the pinned Reachy speech tapper and idle drift.
 
 Source of truth: the pinned Reachy SDK's ``reachy_mini.motion.speech_tapper``
-(``SwayRollRT``), which is what the stock Conversation App feeds to the
-daemon's head wobbler. Numbers here mirror that module so the same speech
-produces the same head motion, without importing numpy/GStreamer.
+(``SwayRollRT``), which the stock audio wobbler uses. Numbers here mirror
+that module so the same speech
+produces the same per-hop offsets, without importing GStreamer. Scheduling,
+target composition, and physical motion are separate concerns.
 
 Units follow the daemon's ``SetSpeechOffsetsCmd``:
 ``(x_m, y_m, z_m, roll_rad, pitch_rad, yaw_rad)``.
@@ -13,6 +14,8 @@ from __future__ import annotations
 
 import math
 import random
+
+import numpy as np
 
 FRAME_MS = 20
 HOP_MS = 50
@@ -68,7 +71,7 @@ class SpeechTapper:
         self.sample_rate = int(sample_rate)
         self.frame = int(self.sample_rate * FRAME_MS / 1000)
         self.hop = int(self.sample_rate * HOP_MS / 1000)
-        rng = random.Random(seed)
+        rng = np.random.default_rng(seed)
         tau = 2 * math.pi
         self._phases = [rng.random() * tau for _ in range(6)]
         self.reset()
@@ -81,10 +84,21 @@ class SpeechTapper:
         self._env = 0.0
         self._up = 0
         self._down = 0
+        self._last_gain = 0.0
         self.t = 0.0
 
     def feed(self, samples: list[float]) -> list[tuple[float, float, float, float, float, float]]:
         """Consume samples, returning one bounded offset tuple per 50 ms hop."""
+        return [offsets for offsets, _gain in self.feed_with_gain(samples)]
+
+    def feed_with_gain(
+        self, samples: list[float],
+    ) -> list[tuple[tuple[float, float, float, float, float, float], float]]:
+        """Return native offsets and their content-free scalar amplitude per hop.
+
+        The scalar is the SDK's loudness and envelope product, before any
+        axis mapping. It can be transported without sending motor targets.
+        """
         if not samples:
             return []
         buf = self._tail + samples
@@ -92,15 +106,17 @@ class SpeechTapper:
         while len(buf) >= self.hop:
             hop = buf[: self.hop]
             buf = buf[self.hop:]
-            out.append(self._hop(hop))
+            offsets = self._hop(hop)
+            out.append((offsets, self._last_gain))
         self._tail = buf
         return out
 
     def _hop(self, hop: list[float]):
-        # The pinned implementation analyses the current hop as its frame.
-        n = len(hop)
-        rms = math.sqrt(sum(x * x for x in hop) / n + 1e-12)
-        db = 20.0 * math.log10(rms + 1e-12)
+        # SwayRollRT keeps the most recent 20 ms of each 50 ms hop and
+        # computes RMS using float32 arithmetic.
+        frame = np.asarray(hop[-self.frame:], dtype=np.float32)
+        rms = np.sqrt(np.mean(frame * frame, dtype=np.float32) + 1e-12, dtype=np.float32)
+        db = 20.0 * math.log10(float(rms) + 1e-12)
 
         if db >= VAD_DB_ON:
             self._above += 1
@@ -129,6 +145,7 @@ class SpeechTapper:
 
         loud = _loudness_gain(db) * SWAY_MASTER
         env = self._env
+        self._last_gain = loud * env
         self.t += HOP_MS / 1000.0
         tau = 2 * math.pi
         p_pitch, p_yaw, p_roll, p_x, p_y, p_z = self._phases

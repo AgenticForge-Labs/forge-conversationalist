@@ -28,7 +28,8 @@ from .config import (
 )
 from .embodiment import EmbodimentSession
 from .ensemble import EnsembleSession
-from .integrations import load_integrations
+from .identified_playback import SEGMENT_ID_KEY, IdentifiedSpeechBridge
+from .integrations import Integrations, load_integrations
 from .mail_stream_notifications import AmbientMailNotifications, load_mail_stream_config
 from .personality import DEFAULT, Personality, load_personality
 from .playback_presence import PlaybackPresence
@@ -40,6 +41,17 @@ from .text_hook import install_assistant_text_hook, install_session_state_hook
 from .transcript_rpc import register_transcript_rpc
 
 logger = logging.getLogger(__name__)
+
+
+def _identified_output_sdk_available() -> bool:
+    """Check for the optional SDK API; the live sink is checked separately."""
+    try:
+        from livekit.agents.types import USERDATA_PLAYOUT_SEGMENT_ID
+        from livekit.agents.voice.io import AudioOutput
+    except ImportError:
+        return False
+    return (USERDATA_PLAYOUT_SEGMENT_ID == SEGMENT_ID_KEY
+            and hasattr(AudioOutput, "identified_playback_supported"))
 
 INSTRUCTIONS = (
     "You are Forge Conversationalist, a helpful spoken assistant. "
@@ -329,13 +341,31 @@ async def entrypoint(ctx: object) -> None:
 
     envelope_opt_in = os.getenv("CONVERSATIONALIST_OUTGOING_SPEECH_ENVELOPE") == "1"
     ensemble = None
+    original_speech = tuple(
+        name for name, choice in getattr(
+            agent_integrations.ensemble, "motion_profiles", {},
+        ).items() if choice.get("speaking") == "original_v1"
+    )
+    if original_speech and (len(original_speech) != 1 or not _identified_output_sdk_available()):
+        # Output events do not identify the originating TTS stream. Until that
+        # association is verified, startup must not silently run an idle-only
+        # approximation while advertising original speech fidelity.
+        logger.warning("Original speech profile unavailable: TTS/output association unverified; voice continues")
+        agent_integrations = replace(agent_integrations, ensemble=None)
+        original_speech = ()
+    original_ready = False
+    preactivation_interrupted = False
+    native_bridge = None
     if agent_integrations.ensemble is not None:
         ensemble = EnsembleSession(
             agent_integrations.ensemble,
             room_id=room_name,
             caller_id=authorized_identity,
             outgoing_speech_envelope=envelope_opt_in,
+            native_gain_performer=original_speech[0] if original_speech else None,
         )
+        if original_speech:
+            native_bridge = IdentifiedSpeechBridge(ensemble)
         ctx.add_shutdown_callback(ensemble.close)
 
     # The default remains the preexisting coarse semantic presence path.
@@ -346,14 +376,19 @@ async def entrypoint(ctx: object) -> None:
         PlaybackPresence(
             lambda state, source, interrupted: ensemble.observe(
                 state, source=source, interrupted=interrupted,
-            ) if ensemble is not None else None,
+            ) if ensemble is not None and (not original_speech or original_ready) else None,
             session_id=room_name,
         )
-        if ensemble is not None and os.getenv("CONVERSATIONALIST_PLAYBACK_PRESENCE") == "1"
+        if ensemble is not None and (
+            original_speech or os.getenv("CONVERSATIONALIST_PLAYBACK_PRESENCE") == "1"
+        )
         else None
     )
 
     def handle_state(signal):
+        nonlocal preactivation_interrupted
+        if original_speech and not original_ready and signal.interrupted:
+            preactivation_interrupted = True
         logger.debug(
             "conversation state changed", extra={"state": signal.state, "source": signal.source}
         )
@@ -431,22 +466,30 @@ async def entrypoint(ctx: object) -> None:
     agent_class = (
         agent_class_with_speech_envelope(
             Agent,
-            lambda frames: _offer_to_all(ensemble, frames),
+            lambda frames: _offer_to_all(ensemble, frames) if envelope_opt_in else False,
+            native_sink=native_bridge.offer if native_bridge is not None and ensemble is not None else None,
+            tag_native_output=native_bridge is not None and ensemble is not None,
+            native_begin=native_bridge.begin if native_bridge is not None and ensemble is not None else None,
+            native_abort=native_bridge.abort if native_bridge is not None and ensemble is not None else None,
         )
-        if envelope_opt_in and ensemble is not None else Agent
+        if (envelope_opt_in or native_bridge is not None) and ensemble is not None else Agent
+    )
+    initial_integrations = (
+        replace(agent_integrations, ensemble=None) if original_speech else agent_integrations
+    )
+    initial_tools = build_assistant_tools(
+        initial_integrations,
+        embodiment_session=embodiment if authorized_identity else None,
+        ensemble_session=ensemble if authorized_identity and not original_speech else None,
+        hermes_completion_notifier=hermes_notifier,
+        hermes_room=room_name,
     )
     agent = agent_class(
         instructions=_room_instructions(
-            agent_integrations, caller_id=authorized_identity, session_id=room_name,
+            initial_integrations, caller_id=authorized_identity, session_id=room_name,
             personality=personality,
         ),
-        tools=build_assistant_tools(
-            agent_integrations,
-            embodiment_session=embodiment if authorized_identity else None,
-            ensemble_session=ensemble if authorized_identity else None,
-            hermes_completion_notifier=hermes_notifier,
-            hermes_room=room_name,
-        ),
+        tools=initial_tools,
     )
     await session.start(room=ctx.room, agent=agent, room_options=room_options)
     hermes_notifier.session = session
@@ -463,6 +506,38 @@ async def entrypoint(ctx: object) -> None:
             ctx.add_shutdown_callback(detach_playback)
         else:
             logger.warning("No LiveKit output playback events available; using semantic presence")
+    if original_speech and ensemble is not None:
+        output = getattr(getattr(session, "output", None), "audio", None)
+        try:
+            if (playback_presence is None or not playback_presence.attached
+                    or native_bridge is None or not native_bridge.attach(output)):
+                raise RuntimeError("identified LiveKit output is unavailable")
+            robot_tools = build_assistant_tools(
+                Integrations(ensemble=agent_integrations.ensemble), ensemble_session=ensemble,
+            )
+            await agent.update_tools([*initial_tools, *robot_tools])
+            await agent.update_instructions(_room_instructions(
+                agent_integrations, caller_id=authorized_identity, session_id=room_name,
+                personality=personality,
+            ))
+            original_ready = True
+            if not preactivation_interrupted:
+                current_state = getattr(session, "agent_state", "idle")
+                ensemble.observe("listening" if current_state in {"listening", "speaking"} else "idle")
+
+            async def detach_native() -> None:
+                native_bridge.detach()
+
+            ctx.add_shutdown_callback(detach_native)
+        except Exception:
+            logger.exception("Identified speech output unavailable; continuing without robot")
+            if native_bridge is not None:
+                native_bridge.detach()
+            if playback_presence is not None:
+                playback_presence.detach()
+            await ensemble.close()
+            ensemble = None
+            agent_integrations = replace(agent_integrations, ensemble=None)
     if authorized_identity:
         register_transcript_rpc(
             ctx.room.local_participant,

@@ -8,6 +8,7 @@ dependencies = [
   "livekit-agents[openai,silero,mcp]>=1.8,<1.9",
   "python-dotenv>=1.0,<2.0",
   "httpx>=0.27,<1",
+  "numpy>=1.24,<3",
 ]
 
 [project.optional-dependencies]

@@ -125,6 +125,15 @@ owners. Voice-only mode requires none of these.
 
 ## Signed-room runtime and capability preflight
 
+For Reachy `smooth_v2` speaking, the operator may additionally set
+`reachy_legacy_speech_fallback: true` in the reviewed Puppeteer configuration.
+If fresh generated-speech features stop arriving, Puppeteer can then use the
+reviewed classic head-only speaking rhythm until fresh features return. This
+rhythm is not synchronized to the audio. It does not retry an uncertain motion
+or override interruption, and it requires classic Reachy expression style and
+the existing explicit speech-driven performer grant. This option has not been
+physically qualified.
+
 The worker connects its authenticated LiveKit room **before** launching the
 one optional Puppeteer stdio child. It requires job-metadata
 `authorized_identity`, a stable room name and an operator-unchanged config.

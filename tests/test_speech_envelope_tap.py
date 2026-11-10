@@ -1,7 +1,7 @@
 """Offline validation of the opt-in passthrough outgoing TTS observation."""
 
 from array import array
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -16,6 +16,7 @@ class FakeAudioFrame:
     sample_rate: int
     num_channels: int
     data: bytes
+    userdata: dict = field(default_factory=dict)
 
 
 def frame(hops: int = 1, amplitude: int = 12000) -> FakeAudioFrame:
@@ -88,6 +89,94 @@ async def test_optional_sink_exception_does_not_interrupt_voice():
         )
     ]
     assert observed == frames
+
+
+@pytest.mark.anyio
+async def test_native_gain_passes_audio_through_and_is_independent_of_generic_sink():
+    original = [frame(4), frame(4), frame(2)]
+    generic, native = [], []
+    output = [item async for item in observe_synthesized_audio(
+        source(original), lambda batch: generic.append(batch) or False,
+        stream_id="same-utterance", native_sink=lambda batch: native.append(batch) or True,
+    )]
+    assert all(a is b for a, b in zip(output, original, strict=True))
+    assert len(generic) == 1
+    assert [len(batch) for batch in native] == [1] * 10
+    hops = [hop for batch in native for hop in batch]
+    assert [hop["sequence"] for hop in hops] == list(range(10))
+    assert all(hop["schema"] == "forge.native_speech_gain.v1" for hop in hops)
+    assert all(hop["stream_id"] == "same-utterance" for hop in hops)
+    assert all("data" not in hop and "text" not in hop and "pose" not in hop for hop in hops)
+
+
+@pytest.mark.anyio
+async def test_native_segment_tags_follow_exact_outgoing_frames():
+    original = [frame(2), frame(2)]
+    native = []
+    output = [item async for item in observe_synthesized_audio(
+        source(original), lambda _batch: True, stream_id="tts-tagged",
+        native_sink=lambda batch: native.extend(batch) or True,
+        tag_native_output=True, native_begin=lambda _stream: True,
+    )]
+    assert all(a is b for a, b in zip(output, original, strict=True))
+    assert all(item.userdata["lk.playout_segment_id"] == "tts-tagged" for item in output)
+    assert [item["sequence"] for item in native] == list(range(4))
+    assert all(item["stream_id"] == "tts-tagged" for item in native)
+
+
+@pytest.mark.anyio
+async def test_failed_tag_aborts_native_stream_without_affecting_voice():
+    original = [frame(2), frame(2)]
+    original[1].userdata["lk.playout_segment_id"] = "different"
+    native, aborted = [], []
+    output = [item async for item in observe_synthesized_audio(
+        source(original), lambda _batch: True, stream_id="tts-1",
+        native_sink=lambda batch: native.extend(batch) or True,
+        tag_native_output=True, native_begin=lambda _stream: True, native_abort=aborted.append,
+    )]
+    assert output == original
+    assert aborted == ["tts-1"]
+    assert len(native) == 2
+    assert original[1].userdata["lk.playout_segment_id"] == "different"
+
+
+@pytest.mark.anyio
+async def test_cancelled_tts_discards_prefetched_native_features():
+    aborted = []
+    stream = observe_synthesized_audio(
+        source([frame(2), frame(2)]), lambda _batch: True, stream_id="discarded",
+        native_sink=lambda _batch: True, tag_native_output=True,
+        native_begin=lambda _stream: True, native_abort=aborted.append,
+    )
+    await anext(stream)
+    await stream.aclose()
+    assert aborted == ["discarded"]
+
+
+@pytest.mark.anyio
+async def test_short_tts_with_no_complete_hop_releases_reservation():
+    aborted = []
+    short = FakeAudioFrame(16000, 1, array("h", [1000] * 160).tobytes())
+    output = [item async for item in observe_synthesized_audio(
+        source([short]), lambda _batch: True, stream_id="short",
+        native_sink=lambda _batch: True, tag_native_output=True,
+        native_begin=lambda _stream: True, native_abort=aborted.append,
+    )]
+    assert output == [short]
+    assert aborted == ["short"]
+
+
+@pytest.mark.anyio
+async def test_rejected_native_gain_does_not_disable_generic_features():
+    original = [frame(4), frame(4)]
+    generic, native = [], []
+    output = [item async for item in observe_synthesized_audio(
+        source(original), lambda batch: generic.append(batch) or True,
+        stream_id="utterance", native_sink=lambda batch: native.append(batch) or False,
+    )]
+    assert output == original
+    assert len(native) == 1
+    assert len(generic) == 2
 
 
 class FakeAgent:
