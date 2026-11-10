@@ -484,10 +484,13 @@ async def entrypoint(ctx: object) -> None:
         hermes_completion_notifier=hermes_notifier,
         hermes_room=room_name,
     )
+    self_text = _self_description(
+        profile, getattr(agent_integrations.ensemble, "performer_ids", ()),
+    ) if agent_integrations.ensemble is not None else ""
     agent = agent_class(
         instructions=_room_instructions(
             initial_integrations, caller_id=authorized_identity, session_id=room_name,
-            personality=personality,
+            personality=personality, self_description=self_text,
         ),
         tools=initial_tools,
     )
@@ -518,7 +521,7 @@ async def entrypoint(ctx: object) -> None:
             await agent.update_tools([*initial_tools, *robot_tools])
             await agent.update_instructions(_room_instructions(
                 agent_integrations, caller_id=authorized_identity, session_id=room_name,
-                personality=personality,
+                personality=personality, self_description=self_text,
             ))
             original_ready = True
             if not preactivation_interrupted:
@@ -587,7 +590,7 @@ async def entrypoint(ctx: object) -> None:
             # "yes" is one tool call instead of a status lookup first.
             await agent.update_instructions(_room_instructions(
                 initial_integrations, caller_id=authorized_identity, session_id=room_name,
-                personality=personality, robot_roster=roster,
+                personality=personality, robot_roster=roster, self_description=self_text,
             ))
     await session.say(personality.greeting)
     # Opt-in local-only company event notifications. The trusted Python
@@ -623,6 +626,41 @@ def _offer_to_all(ensemble: object, frames: list[dict[str, object]]) -> bool:
         if offer(frames, performer_id=performer):
             accepted = True
     return accepted
+
+
+_BODY_FACTS = {
+    "soarm101": (
+        "an SO-ARM101 desk robot arm (an open-source Hugging Face LeRobot design): five joints "
+        "(shoulder pan, shoulder lift, elbow, wrist flex, wrist roll) plus a gripper, moved by "
+        "six Feetech STS3215 serial servos. I never use the gripper. It is driven through the "
+        "soarm101-motion-sdk with enforced joint, speed and acceleration limits. Breathing, "
+        "listening and talking are small continuous movements within a few degrees of neutral; "
+        "yes, no and curious are fixed, pre-reviewed movements; sleep lays it down at its rest pose"
+    ),
+    "reachy": "a Reachy Mini desktop robot from Pollen Robotics, with a moving head and antennas",
+    "stackchan": "a StackChan desktop robot with a pan/tilt head and a face display",
+}
+
+
+def _self_description(profile: object, performer_ids: object = ()) -> str:
+    """Background the model may use when asked about itself; never to be volunteered."""
+    ids = [p for p in (performer_ids or ()) if isinstance(p, str)]
+    bodies = [f"{kind}: {text}" for kind, text in _BODY_FACTS.items()
+              if any(kind in p.lower() for p in ids)]
+    parts = [(
+        f"I think with the language model {profile.llm_model} ({profile.llm_provider}), "
+        f"listen with {profile.stt_model} and speak with {profile.tts_model}, voice "
+        f"{profile.tts_voice}. I run as Forge Conversationalist (voice, on LiveKit), my "
+        "movements come from Forge Puppeteer, and longer work goes to Hermes. "
+    )]
+    if bodies:
+        parts.append("My body: " + "; ".join(bodies) + ". ")
+    return (
+        " What I know about myself, for when I am asked: " + "".join(parts) +
+        "This is background only. Never mention, recite or hint at it unless the user asks "
+        "about my hardware, my model or how I work, and then answer briefly in first person; "
+        "for anything not listed here, say I do not know rather than guessing."
+    )
 
 
 _GESTURE_GLOSS = {
@@ -665,6 +703,7 @@ def _room_instructions(
     session_id: str | None,
     personality: Personality = DEFAULT,
     robot_roster: str = "",
+    self_description: str = "",
 ) -> str:
     """Add only the operator-pinned Reachy move IDs to this room's guidance."""
     base = INSTRUCTIONS
@@ -711,7 +750,7 @@ def _room_instructions(
             "prepare_robot_for_conversation with action move_to_sleep (or confirm_at_sleep "
             "if the user says a part that cannot measure itself is already parked). Never "
             "move without that yes, and never retry a failed move."
-        ) + (f" {robot_roster}" if robot_roster else "")
+        ) + (f" {robot_roster}" if robot_roster else "") + self_description
     if config is None:
         if getattr(integrations, "embodiment", None) is not None:
             return base + (
