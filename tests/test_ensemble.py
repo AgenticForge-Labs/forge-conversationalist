@@ -56,6 +56,7 @@ def test_native_ensemble_disabled_by_default_and_no_new_agent_identity(tmp_path)
         "reachy": {"status": "unavailable", "expressions": ["yes"]},
     }})
     assert roster == "Connected robots and their approved gestures: soarm101 (yes, no, curious)."
+    assert "own call" in _room_instructions(configured, caller_id="operator", session_id="room")
     assert roster in _room_instructions(
         configured, caller_id="operator", session_id="room", robot_roster=roster)
     assert _robot_roster({"performers": {}}) == "" and _robot_roster(None) == ""

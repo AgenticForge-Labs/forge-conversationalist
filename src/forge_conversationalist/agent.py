@@ -688,8 +688,11 @@ def _room_instructions(
             "action move_to_sleep (or confirm_at_sleep if the user says a robot that cannot "
             "measure itself is already parked). Never move a robot without that yes, and "
             "never retry a failed move. When the user asks a robot to make a gesture such as "
-            "yes or no, call the tool straight away without announcing it first, and do not "
-            "ask which robot when only one is connected."
+            "yes or no, call request_ensemble_gesture straight away without announcing it "
+            "first, and do not ask which robot when only one is connected. Every new request "
+            "for a gesture needs its own call, even right after an earlier one. Never say "
+            "you requested or will request a gesture unless you called the tool in this very "
+            "turn; call it first, then answer briefly."
         ) + (f" {robot_roster}" if robot_roster else "")
     if config is None:
         if getattr(integrations, "embodiment", None) is not None:
