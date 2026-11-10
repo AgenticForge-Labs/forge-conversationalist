@@ -76,13 +76,23 @@ def test_playback_presence_opt_in_attaches_to_livekit_output_after_start() -> No
             listeners[name].remove(callback)
 
     output = Output()
+    order = []
+
+    async def say(*_args, **_kwargs):
+        order.append("greeting")
+
+    async def wait_for_startup(*_args, **_kwargs):
+        order.append("arm_ready")
+        return True
+
     session = SimpleNamespace(
-        start=AsyncMock(), say=AsyncMock(), on=Mock(), history=[],
+        start=AsyncMock(), say=say, on=Mock(), history=[],
         output=SimpleNamespace(audio=output),
     )
     robot = SimpleNamespace(
         start=AsyncMock(return_value={"state": "disconnected"}), close=AsyncMock(),
-        observe=Mock(),
+        observe=Mock(), wait_for_startup=wait_for_startup,
+        status=AsyncMock(return_value={"performers": {}}),
     )
     room = SimpleNamespace(name="room", local_participant=Mock())
     ctx = SimpleNamespace(
@@ -103,7 +113,10 @@ def test_playback_presence_opt_in_attaches_to_livekit_output_after_start() -> No
     ):
         asyncio.run(entrypoint(ctx))
     session.start.assert_awaited_once()
-    session.say.assert_awaited_once()
+    # No vocal greeting until the arm has finished waking up.
+    assert order == ["arm_ready", "greeting"]
+    # Attentive (a short hold) while it wakes, rather than starting a long breath.
+    assert robot.observe.call_args_list[0].args == ("listening",)
     assert set(listeners) == {
         "playback_started", "playback_finished", "playback_progressed",
     }
@@ -202,7 +215,9 @@ def test_original_speech_registers_robot_tools_only_after_output_verification(ou
     )
     robot = SimpleNamespace(
         start=AsyncMock(return_value={"state": "disconnected"}), close=AsyncMock(),
-        observe=Mock(), associate_native_playback=Mock(), begin_native_gain=Mock(),
+        observe=Mock(), wait_for_startup=AsyncMock(return_value=True),
+        status=AsyncMock(return_value={"performers": {}}),
+        associate_native_playback=Mock(), begin_native_gain=Mock(),
         offer_native_gain=Mock(), cancel_native_gain=Mock(),
     )
     room = SimpleNamespace(name="room", local_participant=Mock())

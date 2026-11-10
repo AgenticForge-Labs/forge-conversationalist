@@ -572,6 +572,23 @@ async def entrypoint(ctx: object) -> None:
     # A fixed greeting needs TTS only. Asking the LLM to generate it with only
     # system instructions fails on providers that require a user query and
     # creates an unnecessary model request.
+    # ...but not over a robot that is still waking up: the greeting waits until
+    # the arm has reached neutral, then the talking movement can begin with it.
+    if ensemble is not None:
+        # Let the robot stand attentive (a short still hold) once it is awake, not
+        # start a long breath: speech is about to begin, and a running breath must
+        # finish before the talking movement can start.
+        if not original_speech:
+            ensemble.observe("listening")
+        await ensemble.wait_for_startup()
+        roster = _robot_roster(await ensemble.status())
+        if roster and not original_speech:
+            # Tell the model its robots and gestures up front, so a request for
+            # "yes" is one tool call instead of a status lookup first.
+            await agent.update_instructions(_room_instructions(
+                initial_integrations, caller_id=authorized_identity, session_id=room_name,
+                personality=personality, robot_roster=roster,
+            ))
     await session.say(personality.greeting)
     # Opt-in local-only company event notifications. The trusted Python
     # worker holds the Hatchet credential; nothing reaches the browser
@@ -608,12 +625,28 @@ def _offer_to_all(ensemble: object, frames: list[dict[str, object]]) -> bool:
     return accepted
 
 
+def _robot_roster(status: object) -> str:
+    """One sentence naming each connected robot and its approved gestures."""
+    performers = status.get("performers") if isinstance(status, dict) else None
+    if not isinstance(performers, dict):
+        return ""
+    parts = []
+    for name, entry in sorted(performers.items()):
+        if not isinstance(entry, dict) or entry.get("status") in {"unavailable", "blocked"}:
+            continue
+        gestures = [g for g in entry.get("expressions", ()) if isinstance(g, str)]
+        parts.append(f"{name} ({', '.join(gestures) if gestures else 'no gestures'})")
+    return ("Connected robots and their approved gestures: " + "; ".join(parts) + "."
+            ) if parts else ""
+
+
 def _room_instructions(
     integrations: object,
     *,
     caller_id: str | None,
     session_id: str | None,
     personality: Personality = DEFAULT,
+    robot_roster: str = "",
 ) -> str:
     """Add only the operator-pinned Reachy move IDs to this room's guidance."""
     base = INSTRUCTIONS
@@ -654,8 +687,13 @@ def _room_instructions(
             "sleep. Only after the user says yes, call prepare_robot_for_conversation with "
             "action move_to_sleep (or confirm_at_sleep if the user says a robot that cannot "
             "measure itself is already parked). Never move a robot without that yes, and "
-            "never retry a failed move."
-        )
+            "never retry a failed move. When the user asks a robot to make a gesture such as "
+            "yes or no, call request_ensemble_gesture straight away without announcing it "
+            "first, and do not ask which robot when only one is connected. Every new request "
+            "for a gesture needs its own call, even right after an earlier one. Never say "
+            "you requested or will request a gesture unless you called the tool in this very "
+            "turn; call it first, then answer briefly."
+        ) + (f" {robot_roster}" if robot_roster else "")
     if config is None:
         if getattr(integrations, "embodiment", None) is not None:
             return base + (

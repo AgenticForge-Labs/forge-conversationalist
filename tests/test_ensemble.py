@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from v4_config import write_ensemble
 
-from forge_conversationalist.agent import _room_instructions
+from forge_conversationalist.agent import _robot_roster, _room_instructions
 from forge_conversationalist.assistant_tools import build_assistant_tools
 from forge_conversationalist.ensemble import (
     SPEECH_ENVELOPE_MAX_QUEUE,
@@ -51,6 +51,15 @@ def test_native_ensemble_disabled_by_default_and_no_new_agent_identity(tmp_path)
     assert "request_ensemble_gesture" in _room_instructions(
         configured, caller_id="operator", session_id="room"
     )
+    roster = _robot_roster({"performers": {
+        "soarm101": {"status": "idle", "expressions": ["yes", "no", "curious"]},
+        "reachy": {"status": "unavailable", "expressions": ["yes"]},
+    }})
+    assert roster == "Connected robots and their approved gestures: soarm101 (yes, no, curious)."
+    assert "own call" in _room_instructions(configured, caller_id="operator", session_id="room")
+    assert roster in _room_instructions(
+        configured, caller_id="operator", session_id="room", robot_roster=roster)
+    assert _robot_roster({"performers": {}}) == "" and _robot_roster(None) == ""
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -114,7 +123,13 @@ def test_ensemble_agent_tools_only_status_and_exact_explicit_gestures(tmp_path):
             self.ready = False
 
         async def status(self):
-            return {"schema": "forge.behavior.v1", "state": "speaking"}
+            # Like Puppeteer: a robot the startup gate holds says so in its evidence;
+            # one that is awake and in the conversation does not.
+            holding = not self.ready
+            return {"schema": "forge.behavior.v1", "state": "speaking", "performers": {
+                "reachy": {"status": "unavailable" if holding else "idle",
+                           "evidence": "startup_gate:not_at_sleep" if holding else "no action"},
+                "stackchan": {"status": "idle", "evidence": "no action"}}}
 
         async def startup(self):
             if self.ready:
@@ -163,6 +178,12 @@ def test_ensemble_agent_tools_only_status_and_exact_explicit_gestures(tmp_path):
         answered = json.loads(await registered["prepare_robot_for_conversation"]("reachy", "move_to_sleep"))
         assert answered["outcome"] == "at_sleep" and "reached its sleep position" in answered["spoken_guidance"]
         stub.ready = True
+        assert "startup_questions" not in json.loads(await registered["get_ensemble_status"]())
+        # An awake robot in the conversation is naturally not at sleep: that is no question.
+        async def awake_startup():
+            return {"outcome": "observed", "ready": False, "performers": {
+                "reachy": {"status": "not_at_sleep", "can_move_to_sleep": True, "deltas_deg": {"elbow_flex": -90.0}}}}
+        stub.startup = awake_startup
         assert "startup_questions" not in json.loads(await registered["get_ensemble_status"]())
         result = json.loads(await registered["request_ensemble_gesture"]("yes", "reachy"))
         assert result["outcome"] == "accepted" and result["expression"] == "yes"

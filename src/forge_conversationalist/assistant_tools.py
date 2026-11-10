@@ -143,11 +143,19 @@ def build_assistant_tools(
             status = await ensemble_session.status()
             startup = await ensemble_session.startup()
             performers = startup.get("performers") if startup.get("outcome") == "observed" else None
+            # Only a robot the startup gate is holding still has a question. A robot
+            # that is awake and in the conversation is naturally not at sleep.
+            gated = {
+                name for name, entry in ((status.get("performers") or {}).items()
+                                         if isinstance(status, dict) else ())
+                if isinstance(entry, dict) and str(entry.get("evidence", "")).startswith("startup_gate:")
+            }
             held = {
                 name: {key: entry.get(key) for key in
                        ("status", "message", "deltas_deg", "can_move_to_sleep")}
                 for name, entry in (performers or {}).items()
-                if isinstance(entry, dict) and entry.get("status") not in {"at_sleep", "confirmed_by_user"}
+                if name in gated and isinstance(entry, dict)
+                and entry.get("status") not in {"at_sleep", "confirmed_by_user"}
             }
             if held and isinstance(status, dict):
                 status = {**status, "startup_questions": held, "spoken_guidance": (

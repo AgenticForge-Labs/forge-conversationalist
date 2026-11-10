@@ -15,6 +15,7 @@ capability checks.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections import deque
 from collections.abc import Callable
@@ -122,10 +123,12 @@ class SessionStateHook:
     post-playout assistant text callback and performs no presentation or motion.
     """
 
-    def __init__(self, callback: StateCallback) -> None:
+    def __init__(self, callback: StateCallback, *, listening_hold_s: float = 1.5) -> None:
         if not callable(callback):
             raise TypeError("callback must be callable")
         self._callback = callback
+        self._listening_hold_s = float(listening_hold_s)
+        self._pending: asyncio.TimerHandle | None = None
         self._last_state: str | None = None
         self._agent_state: str | None = None
         self._user_state: str | None = None
@@ -144,23 +147,54 @@ class SessionStateHook:
         self._user_state = new_state
         self._refresh("user")
 
-    def _refresh(self, source: Literal["agent", "user"]) -> None:
+    def _mapped(self) -> str | None:
         # A user's speech is evidence of an interruption/turn and maps to
         # listening even while LiveKit still reports agent speaking. In
         # contrast, a routine user-listening event must not cancel a live
-        # speaking state. Thinking/initializing are deliberately left unmapped.
+        # speaking state. LiveKit's agent "listening" only means the agent is
+        # waiting for the user, so the robot keeps its idle breathing then and
+        # pauses to listen while the user actually talks. While the agent is
+        # thinking the robot stays attentive (a still hold that can hand over
+        # to speaking quickly). Initializing is left unmapped.
         if self._user_state == "speaking":
-            mapped = "listening"
-        elif self._agent_state == "speaking":
-            mapped = "speaking"
-        elif self._user_state == "away":
-            mapped = "idle"
-        elif self._agent_state == "listening":
-            mapped = "listening"
-        elif self._agent_state == "idle":
-            mapped = "idle"
-        else:
+            return "listening"
+        if self._agent_state == "speaking":
+            return "speaking"
+        if self._user_state == "away":
+            return "idle"
+        if self._agent_state == "thinking":
+            return "listening"
+        if self._agent_state in {"listening", "idle"}:
+            return "idle"
+        return None
+
+    def _refresh(self, source: Literal["agent", "user"]) -> None:
+        if self._pending is not None:
+            self._pending.cancel()
+            self._pending = None
+        mapped = self._mapped()
+        if mapped is None:
             return
+        if mapped == "idle" and self._last_state == "listening" and self._listening_hold_s > 0:
+            # The user stopped talking. The model usually starts thinking within
+            # a moment; going idle now would start a breath that must finish
+            # before the next state could take over. Wait briefly first.
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                self._pending = loop.call_later(self._listening_hold_s, self._hold_elapsed, source)
+                return
+        self._emit_mapped(mapped, source)
+
+    def _hold_elapsed(self, source: Literal["agent", "user"]) -> None:
+        self._pending = None
+        mapped = self._mapped()
+        if mapped is not None:
+            self._emit_mapped(mapped, source)
+
+    def _emit_mapped(self, mapped: str, source: Literal["agent", "user"]) -> None:
         interrupted = (
             source == "user" and self._user_state == "speaking"
             and self._agent_state == "speaking" and self._last_state == "speaking"
