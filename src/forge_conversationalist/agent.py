@@ -76,13 +76,18 @@ INSTRUCTIONS = (
     "Company email and calendar are read-only through Hermes company services; "
     "never claim to have sent mail or changed a calendar, because those writes "
     "are not available to you. "
-    "Physical motion and consequential changes require the gateway's own "
+)
+
+#: Rules for a robot reached only through separate tool calls (the older direct Puppeteer
+#: path). A robot that is this assistant's embodied body (the ensemble) follows the
+#: gesture-tag guidance instead: its presence moves by itself and gestures are part of replying.
+_DIRECT_MOTION_RULES = (
+    " Physical motion and consequential changes require the gateway's own "
     "permission, validation, and human approval. When a restricted Reachy move "
     "tool is available, call it only after the user explicitly asks for a "
     "movement or expression, and read the tool's spoken_guidance before "
     "replying: never say a gesture was requested when the outcome was "
-    "unsupported or denied. "
-    "movement or expression. Never move Reachy automatically while listening, "
+    "unsupported or denied. Never move Reachy automatically while listening, "
     "speaking, idle, greeting, or acknowledging. Use only the exact approved "
     "moves enforced by the gateway."
 )
@@ -676,6 +681,14 @@ _GESTURES = {
     "curious": ("look curious", "you are intrigued, asked something playful, or making a light joke"),
     "surprised": ("startle with surprise", "something is unexpected, or the news is exciting or shocking"),
     "confused": ("look confused", "you do not understand, or the question is puzzling or unclear"),
+    "happy": ("look happy", "you are glad, pleased, or sharing good news"),
+    "excited": ("get excited", "something is thrilling or you are very enthusiastic"),
+    "sad": ("look sad", "you are sorry, disappointed, or sharing bad news"),
+    "calm": ("settle calmly", "you are reassuring or soothing the user"),
+    "proud": ("look proud", "you or the user accomplished something worth being proud of"),
+    "grateful": ("show gratitude", "the user thanks you or does you a favour"),
+    "thoughtful": ("look thoughtful", "a question needs real consideration before you answer"),
+    "concerned": ("look concerned", "the user shares a worry or a problem"),
     "acknowledge": ("acknowledge", "you are simply noting what was said"),
     "sleep2": ("lie down to sleep", "the user asks you to go to sleep"),
     "neutral": ("wake up and stand ready", "the user asks you to wake up"),
@@ -747,6 +760,8 @@ def _room_instructions(
             "If no current read grant exists, say details are unavailable."
         )
     config = getattr(integrations, "puppeteer_stdio", None)
+    if getattr(integrations, "ensemble", None) is None:
+        base += _DIRECT_MOTION_RULES
     if getattr(integrations, "ensemble", None) is not None:
         return base + (
             " The robots connected to this room are your body: you are the robot. "

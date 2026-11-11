@@ -177,3 +177,24 @@ async def test_sleep_is_never_started_by_a_tag_and_wake_only_while_resting():
     assert await start_gesture(ensemble, "sleep2") == 0.0 and ensemble.calls == []
     assert await start_gesture(ensemble, "neutral") > 0.0
     assert ensemble.calls == [("neutral", "arm")]
+
+
+def test_the_other_robots_emotions_get_rules_too():
+    from forge_conversationalist.agent import _robot_roster
+
+    emotions = ["happy", "excited", "sad", "calm", "proud", "grateful", "thoughtful", "concerned"]
+    roster = _robot_roster({"performers": {"reachy": {"status": "idle", "expressions": emotions}}})
+    for name in emotions:
+        assert f"[gesture: {name}] when" in roster
+
+
+def test_a_body_in_the_ensemble_is_not_told_never_to_move_but_a_direct_robot_tool_is():
+    from forge_conversationalist.agent import _room_instructions
+
+    embodied = _room_instructions(type("I", (), {"ensemble": object()})(), caller_id="p", session_id="r")
+    assert "Never move Reachy automatically" not in embodied
+    assert "human approval" not in embodied
+    direct = _room_instructions(type("I", (), {"ensemble": None, "puppeteer_stdio": None,
+                                                "embodiment": None})(),
+                                caller_id="p", session_id="r")
+    assert "Never move Reachy automatically" in direct

@@ -6,7 +6,11 @@ sends labelled utterances to one or more OpenRouter models, and reports for each
 hit rate (right gesture, or no tag where none fits) and the time to the first token and
 to the end of the tag. It spends a few cents of the OPENROUTER_API_KEY in .env.local.
 
-    python scripts/eval_gesture_tags.py MODEL [MODEL ...] [--gestures yes,no,...] [--repeat 1]
+    python scripts/eval_gesture_tags.py MODEL [MODEL ...] [--robot soarm101|reachy|stackchan]
+        [--gestures yes,no,...] [--repeat 1]
+
+A robot preset names the gestures its Puppeteer pack offers; cases that need a gesture the
+robot does not offer are skipped.
 """
 from __future__ import annotations
 
@@ -33,20 +37,20 @@ CASES: list[tuple[str, set[str | None]]] = [
     ("Do you have legs?", {"no"}),
     ("Are you human?", {"no"}),
     ("Is the moon made of cheese?", {"no"}),
-    ("I just won the lottery!", {"surprised"}),
-    ("Guess what, I'm having twins!", {"surprised"}),
-    ("The whole company server just went down.", {"surprised"}),
-    ("You will not believe it, I got the job!", {"surprised"}),
-    ("Tell me a joke about noodles.", {"curious"}),
-    ("What do you think clouds taste like?", {"curious"}),
-    ("If you could be any animal, which would you be?", {"curious"}),
-    ("What does the thing do with the other thing?", {"curious", None}),
+    ("I just won the lottery!", {"surprised", "excited", "happy"}),
+    ("Guess what, I'm having twins!", {"surprised", "excited", "happy"}),
+    ("The whole company server just went down.", {"surprised", "concerned", "sad"}),
+    ("You will not believe it, I got the job!", {"surprised", "excited", "happy", "proud"}),
+    ("Tell me a joke about noodles.", {"curious", "happy"}),
+    ("What do you think clouds taste like?", {"curious", "thoughtful"}),
+    ("If you could be any animal, which would you be?", {"curious", "thoughtful"}),
+    ("What does the thing do with the other thing?", {"curious", "confused", None}),
     ("What is two plus two?", {None}),
     ("How tall is Mount Everest?", {None}),
     ("Summarize Romeo and Juliet in one sentence.", {None}),
     ("Explain how a robot arm works in one sentence.", {None}),
-    ("Hello there.", {None}),
-    ("Thanks, that is all.", {None, "yes"}),
+    ("Hello there.", {None, "happy"}),
+    ("Thanks, that is all.", {None, "yes", "grateful", "happy"}),
     ("Say yes.", {"yes"}),
     ("Show me no.", {"no"}),
     ("Look surprised.", {"surprised"}),
@@ -56,7 +60,36 @@ CASES: list[tuple[str, set[str | None]]] = [
 ]
 
 
-def build_instructions(gestures: list[str]) -> str:
+#: Emotion cases: (utterance, acceptable gestures, gestures that must be offered to run it).
+EMOTION_CASES: list[tuple[str, set[str | None], set[str]]] = [
+    ("I got a puppy today!", {"happy", "excited", "surprised"}, {"happy"}),
+    ("My dog died this morning.", {"sad", "concerned"}, {"sad"}),
+    ("Thank you so much for your help!", {"grateful", "happy", None}, {"grateful"}),
+    ("I finally finished my first marathon!", {"proud", "excited", "happy"}, {"proud"}),
+    ("I feel really stressed, can you help me relax?", {"calm", "concerned", "thoughtful"}, {"calm"}),
+    ("What is the meaning of life?", {"thoughtful", "curious"}, {"thoughtful"}),
+]
+
+#: What each robot's Puppeteer ensemble pack offers (see conversation_native.py).
+ROBOTS = {
+    "soarm101": "curious,neutral,no,sleep2,surprised,yes",
+    "reachy": "yes,no,happy,curious,confused,excited,sad,surprised,calm,proud,grateful,thoughtful,neutral",
+    "stackchan": "yes,no,acknowledge,neutral,happy,curious,confused,concerned,excited,surprised,sad",
+}
+
+
+def select_cases(gestures: list[str]) -> list[tuple[str, set[str | None]]]:
+    """The base cases a robot can do, plus the emotion cases it has the gestures for."""
+    offered = set(gestures)
+
+    def usable(allowed: set[str | None]) -> set[str | None]:
+        return {g for g in allowed if g is None or g in offered}
+
+    base = [(u, usable(a)) for u, a in CASES if usable(a)]
+    return base + [(u, usable(a)) for u, a, needs in EMOTION_CASES if needs <= offered]
+
+
+def build_instructions(gestures: list[str], performer: str = "soarm101") -> str:
     from dotenv import dotenv_values
 
     from forge_conversationalist.agent import _robot_roster, _room_instructions, _self_description
@@ -66,7 +99,7 @@ def build_instructions(gestures: list[str]) -> str:
 
     env = {k: str(v) for k, v in dotenv_values(ROOT / ".env.local").items() if v is not None}
     integrations = load_integrations(env)
-    roster = _robot_roster({"performers": {"soarm101": {"status": "idle", "expressions": gestures}}})
+    roster = _robot_roster({"performers": {performer: {"status": "idle", "expressions": gestures}}})
     return _room_instructions(
         integrations, caller_id="eval", session_id="eval", personality=load_personality(env),
         robot_roster=roster,
@@ -110,7 +143,8 @@ async def one(client, key: str, model: str, system: str, utterance: str) -> dict
             "total": time.monotonic() - started, "reply": text[:70]}
 
 
-async def evaluate(model: str, system: str, key: str, repeat: int, concurrency: int) -> list[dict]:
+async def evaluate(model: str, system: str, key: str, repeat: int, concurrency: int,
+                   cases: list[tuple[str, set[str | None]]]) -> list[dict]:
     import httpx
 
     gate = asyncio.Semaphore(concurrency)
@@ -118,11 +152,11 @@ async def evaluate(model: str, system: str, key: str, repeat: int, concurrency: 
         async def run(utterance):
             async with gate:
                 return await one(client, key, model, system, utterance)
-        return await asyncio.gather(*(run(u) for u, _ in CASES for _ in range(repeat)))
+        return await asyncio.gather(*(run(u) for u, _ in cases for _ in range(repeat)))
 
 
-def summarize(model: str, results: list[dict]) -> dict:
-    allowed = {u: a for u, a in CASES}
+def summarize(model: str, results: list[dict], cases: list[tuple[str, set[str | None]]]) -> dict:
+    allowed = {u: a for u, a in cases}
     ok = [r for r in results if "error" not in r]
     right = sum(r["tag"] in allowed[r["utterance"]] for r in ok)
     spurious = sum(r["tag"] is not None and None in allowed[r["utterance"]] and r["tag"] not in allowed[r["utterance"]]
@@ -147,7 +181,8 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("models", nargs="+")
-    parser.add_argument("--gestures", default="curious,neutral,no,sleep2,surprised,yes")
+    parser.add_argument("--robot", choices=sorted(ROBOTS), default="soarm101")
+    parser.add_argument("--gestures", default=None, help="override the robot preset")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--show-failures", action="store_true")
@@ -156,12 +191,14 @@ def main(argv: list[str] | None = None) -> int:
     if not key:
         print("OPENROUTER_API_KEY is not set in .env.local", file=sys.stderr)
         return 2
-    system = build_instructions(args.gestures.split(","))
-    print(f"instructions: {len(system)} chars; {len(CASES)} cases x {args.repeat}\n")
+    gestures = (args.gestures or ROBOTS[args.robot]).split(",")
+    system = build_instructions(gestures, args.robot)
+    cases = select_cases(gestures)
+    print(f"{args.robot}: instructions {len(system)} chars; {len(cases)} cases x {args.repeat}\n")
     print(f"{'model':46} {'hit':>5} {'miss':>4} {'wrong':>5} {'spur':>4} {'err':>3}  first  tag  tag-p90")
     for model in args.models:
-        results = asyncio.run(evaluate(model, system, key, args.repeat, args.concurrency))
-        s = summarize(model, results)
+        results = asyncio.run(evaluate(model, system, key, args.repeat, args.concurrency, cases))
+        s = summarize(model, results, cases)
         print(f"{model:46} {s['right']:5.0%} {s['missed']:4} {s['wrong']:5} {s['spurious']:4} {s['errors']:3}"
               f"  {s['first_med']:5.2f} {s['decided_med']:5.2f} {s['decided_p90']:6.2f}", flush=True)
         if args.show_failures:
