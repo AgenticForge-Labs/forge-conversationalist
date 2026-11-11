@@ -145,6 +145,7 @@ async def filter_gesture_stream(
         cleaned = tags.feed(text)
         if tags.started is not None and not delayed:
             delayed = True
+            logger.info("gesture tag: %s", tags.started)
             delay = await start_gesture(ensemble, tags.started)
             if delay > 0:
                 await sleep(delay)
