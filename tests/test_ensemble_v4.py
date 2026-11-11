@@ -2,6 +2,7 @@ import json
 import math
 
 import pytest
+from v4_config import write_ensemble
 
 from forge_conversationalist.ensemble import PuppeteerEnsembleConfig
 
@@ -374,3 +375,22 @@ def test_v4_soarm_sleep_fields_are_validated(tmp_path):
     pin = "sha256:" + "d" * 64
     ok = room(sleep_target="sleep2", pose_targets={"sleep2": pin}, trusted_host_token_env="SOARM_HOST")
     assert PuppeteerEnsembleConfig(ok).performer_ids == (ident,)
+
+
+def test_soarm_live_presence_marks_the_arm_speech_driven(tmp_path):
+    live = {"envelope_revision": "sha256:" + "b" * 64, "breath_delta_deg": [0, 1, 4, -2, 0],
+            "max_offset_deg": [0, 6, 6, 6, 6], "speech_driven": True}
+    path = write_ensemble(tmp_path, kinds=("soarm101",), providers={"soarm101": {"live_presence": live}})
+    config = PuppeteerEnsembleConfig(path)
+    assert config.speech_driven_performers == ("soarm101",)
+    assert config.preflight()["soarm_motion"]["soarm101"]["configuration"] == "motion_configured"
+    quiet = write_ensemble(tmp_path, kinds=("soarm101",), name="quiet.json", providers={
+        "soarm101": {"live_presence": {**live, "speech_driven": False}}})
+    assert PuppeteerEnsembleConfig(quiet).speech_driven_performers == ()
+
+
+def test_soarm_live_presence_block_must_be_well_formed(tmp_path):
+    path = write_ensemble(tmp_path, kinds=("soarm101",),
+                          providers={"soarm101": {"live_presence": {"speech_driven": True}}})
+    with pytest.raises(ValueError, match="live presence block"):
+        PuppeteerEnsembleConfig(path)

@@ -28,6 +28,7 @@ from .config import (
 )
 from .embodiment import EmbodimentSession
 from .ensemble import EnsembleSession
+from .gesture_tags import agent_class_with_gesture_tags
 from .identified_playback import SEGMENT_ID_KEY, IdentifiedSpeechBridge
 from .integrations import Integrations, load_integrations
 from .mail_stream_notifications import AmbientMailNotifications, load_mail_stream_config
@@ -75,13 +76,18 @@ INSTRUCTIONS = (
     "Company email and calendar are read-only through Hermes company services; "
     "never claim to have sent mail or changed a calendar, because those writes "
     "are not available to you. "
-    "Physical motion and consequential changes require the gateway's own "
+)
+
+#: Rules for a robot reached only through separate tool calls (the older direct Puppeteer
+#: path). A robot that is this assistant's embodied body (the ensemble) follows the
+#: gesture-tag guidance instead: its presence moves by itself and gestures are part of replying.
+_DIRECT_MOTION_RULES = (
+    " Physical motion and consequential changes require the gateway's own "
     "permission, validation, and human approval. When a restricted Reachy move "
     "tool is available, call it only after the user explicitly asks for a "
     "movement or expression, and read the tool's spoken_guidance before "
     "replying: never say a gesture was requested when the outcome was "
-    "unsupported or denied. "
-    "movement or expression. Never move Reachy automatically while listening, "
+    "unsupported or denied. Never move Reachy automatically while listening, "
     "speaking, idle, greeting, or acknowledging. Use only the exact approved "
     "moves enforced by the gateway."
 )
@@ -474,6 +480,10 @@ async def entrypoint(ctx: object) -> None:
         )
         if (envelope_opt_in or native_bridge is not None) and ensemble is not None else Agent
     )
+    if ensemble is not None and authorized_identity and not original_speech:
+        # One model call per reply: a leading [gesture: NAME] tag starts the gesture and the
+        # voice follows partway through it (see gesture_tags).
+        agent_class = agent_class_with_gesture_tags(agent_class, ensemble)
     initial_integrations = (
         replace(agent_integrations, ensemble=None) if original_speech else agent_integrations
     )
@@ -484,10 +494,13 @@ async def entrypoint(ctx: object) -> None:
         hermes_completion_notifier=hermes_notifier,
         hermes_room=room_name,
     )
+    self_text = _self_description(
+        profile, getattr(agent_integrations.ensemble, "performer_ids", ()),
+    ) if agent_integrations.ensemble is not None else ""
     agent = agent_class(
         instructions=_room_instructions(
             initial_integrations, caller_id=authorized_identity, session_id=room_name,
-            personality=personality,
+            personality=personality, self_description=self_text,
         ),
         tools=initial_tools,
     )
@@ -518,7 +531,7 @@ async def entrypoint(ctx: object) -> None:
             await agent.update_tools([*initial_tools, *robot_tools])
             await agent.update_instructions(_room_instructions(
                 agent_integrations, caller_id=authorized_identity, session_id=room_name,
-                personality=personality,
+                personality=personality, self_description=self_text,
             ))
             original_ready = True
             if not preactivation_interrupted:
@@ -587,7 +600,7 @@ async def entrypoint(ctx: object) -> None:
             # "yes" is one tool call instead of a status lookup first.
             await agent.update_instructions(_room_instructions(
                 initial_integrations, caller_id=authorized_identity, session_id=room_name,
-                personality=personality, robot_roster=roster,
+                personality=personality, robot_roster=roster, self_description=self_text,
             ))
     await session.say(personality.greeting)
     # Opt-in local-only company event notifications. The trusted Python
@@ -625,19 +638,98 @@ def _offer_to_all(ensemble: object, frames: list[dict[str, object]]) -> bool:
     return accepted
 
 
+_BODY_FACTS = {
+    "soarm101": (
+        "an SO-ARM101 desk robot arm (an open-source Hugging Face LeRobot design): five joints "
+        "(shoulder pan, shoulder lift, elbow, wrist flex, wrist roll) plus a gripper, moved by "
+        "six Feetech STS3215 serial servos. I never use the gripper. It is driven through the "
+        "soarm101-motion-sdk with enforced joint, speed and acceleration limits. Breathing, "
+        "listening and talking are small continuous movements within a few degrees of neutral; "
+        "yes, no and curious are fixed, pre-reviewed movements; sleep lays it down at its rest pose"
+    ),
+    "reachy": "a Reachy Mini desktop robot from Pollen Robotics, with a moving head and antennas",
+    "stackchan": "a StackChan desktop robot with a pan/tilt head and a face display",
+}
+
+
+def _self_description(profile: object, performer_ids: object = ()) -> str:
+    """Background the model may use when asked about itself; never to be volunteered."""
+    ids = [p for p in (performer_ids or ()) if isinstance(p, str)]
+    bodies = [f"{kind}: {text}" for kind, text in _BODY_FACTS.items()
+              if any(kind in p.lower() for p in ids)]
+    parts = [(
+        f"I think with the language model {profile.llm_model} ({profile.llm_provider}), "
+        f"listen with {profile.stt_model} and speak with {profile.tts_model}, voice "
+        f"{profile.tts_voice}. I run as Forge Conversationalist (voice, on LiveKit), my "
+        "movements come from Forge Puppeteer, and longer work goes to Hermes. "
+    )]
+    if bodies:
+        parts.append("My body: " + "; ".join(bodies) + ". ")
+    return (
+        " What I know about myself, for when I am asked: " + "".join(parts) +
+        "This is background only. Never mention, recite or hint at it unless the user asks "
+        "about my hardware, my model or how I work, and then answer briefly in first person; "
+        "for anything not listed here, say I do not know rather than guessing."
+    )
+
+
+#: gesture name -> (what it looks like, when to use it). Only gestures a robot actually
+#: offers are described to the model; an unknown name is listed bare.
+_GESTURES = {
+    "yes": ("nod yes", "your answer is yes, you agree, accept or confirm something"),
+    "no": ("shake my head no", "your answer is no, you disagree, refuse, or cannot do something"),
+    "curious": ("look curious", "you are intrigued, asked something playful, or making a light joke"),
+    "surprised": ("startle with surprise", "something is unexpected, or the news is exciting or shocking"),
+    "confused": ("look confused", "you do not understand, or the question is puzzling or unclear"),
+    "happy": ("look happy", "you are glad, pleased, or sharing good news"),
+    "excited": ("get excited", "something is thrilling or you are very enthusiastic"),
+    "sad": ("look sad", "you are sorry, disappointed, or sharing bad news"),
+    "calm": ("settle calmly", "you are reassuring or soothing the user"),
+    "proud": ("look proud", "you or the user accomplished something worth being proud of"),
+    "grateful": ("show gratitude", "the user thanks you or does you a favour"),
+    "thoughtful": ("look thoughtful", "a question needs real consideration before you answer"),
+    "concerned": ("look concerned", "the user shares a worry or a problem"),
+    "acknowledge": ("acknowledge", "you are simply noting what was said"),
+    "sleep2": ("lie down to sleep", "the user asks you to go to sleep"),
+    "neutral": ("wake up and stand ready", "the user asks you to wake up"),
+}
+
+
 def _robot_roster(status: object) -> str:
-    """One sentence naming each connected robot and its approved gestures."""
+    """The body and its gestures, with a when-to-use rule for each, built from what is offered."""
     performers = status.get("performers") if isinstance(status, dict) else None
     if not isinstance(performers, dict):
         return ""
     parts = []
+    resting = []
+    offered: list[str] = []
     for name, entry in sorted(performers.items()):
         if not isinstance(entry, dict) or entry.get("status") in {"unavailable", "blocked"}:
             continue
         gestures = [g for g in entry.get("expressions", ()) if isinstance(g, str)]
-        parts.append(f"{name} ({', '.join(gestures) if gestures else 'no gestures'})")
-    return ("Connected robots and their approved gestures: " + "; ".join(parts) + "."
-            ) if parts else ""
+        described = [f"{g} ({_GESTURES[g][0]})" if g in _GESTURES else g for g in gestures]
+        parts.append(f"{name}: {', '.join(described) if described else 'no gestures'}")
+        offered.extend(g for g in gestures if g not in offered)
+        if "sleep2" in gestures and "neutral" in gestures:
+            resting.append(name)
+    if not parts:
+        return ""
+    text = ("Your body and its approved gestures, by tool id (never say the ids aloud): "
+            + "; ".join(parts) + ".")
+    rules = [f"[gesture: {g}] when {_GESTURES[g][1]}" for g in offered
+             if g in _GESTURES and g not in {"sleep2", "neutral"}]
+    if rules:
+        text += (" When to start a reply with a gesture tag: " + "; ".join(rules) + ". Pick the one "
+                 "that fits the feeling of your whole answer, and use no tag when none fits, for "
+                 "example a plain fact, a number or a neutral explanation.")
+    if resting:
+        text += (f" For {', '.join(resting)}: only when the user asks you to lie down or go to "
+                 "sleep, call request_ensemble_gesture with sleep2 (never use a tag for it, and "
+                 "never lie down on your own). While you are resting nothing else works: begin "
+                 "your reply with [gesture: neutral] to wake up when the user wants you up, "
+                 "after which you resume breathing; if they asked for something else, also call "
+                 "request_ensemble_gesture for it and it follows the wake-up.")
+    return text
 
 
 def _room_instructions(
@@ -647,6 +739,7 @@ def _room_instructions(
     session_id: str | None,
     personality: Personality = DEFAULT,
     robot_roster: str = "",
+    self_description: str = "",
 ) -> str:
     """Add only the operator-pinned Reachy move IDs to this room's guidance."""
     base = INSTRUCTIONS
@@ -667,33 +760,39 @@ def _room_instructions(
             "If no current read grant exists, say details are unavailable."
         )
     config = getattr(integrations, "puppeteer_stdio", None)
+    if getattr(integrations, "ensemble", None) is None:
+        base += _DIRECT_MOTION_RULES
     if getattr(integrations, "ensemble", None) is not None:
         return base + (
-            " One operator-authorized Puppeteer room may mirror approximate "
-            "listening/speaking/idle states across its configured performers. These states "
-            "are not speech sample timestamps, nor are robot movements evidence "
-            "of completed company tasks. Use get_ensemble_status to inspect "
-            "individual outcomes and each robot's exact approved expressions. "
-            "Use request_ensemble_gesture only when the user explicitly requests "
-            "a gesture for a selected performer; first discover the name and "
-            "performer_id from get_ensemble_status. Never issue raw motion, "
-            "infer physical completion from "
-            "accepted admission, or retry unknown outcomes. If a gesture was accepted, "
-            "say it was requested, not that it happened. If a performer is blocked, "
-            "say its outcome is unconfirmed; never promise it will settle or resume. "
-            "Early in the conversation call get_ensemble_status once. If it lists "
-            "startup_questions, a robot is holding still because it is not at its sleep "
-            "position: say which robot and how far off it is, and ask whether to move it to "
-            "sleep. Only after the user says yes, call prepare_robot_for_conversation with "
-            "action move_to_sleep (or confirm_at_sleep if the user says a robot that cannot "
-            "measure itself is already parked). Never move a robot without that yes, and "
-            "never retry a failed move. When the user asks a robot to make a gesture such as "
-            "yes or no, call request_ensemble_gesture straight away without announcing it "
-            "first, and do not ask which robot when only one is connected. Every new request "
-            "for a gesture needs its own call, even right after an earlier one. Never say "
-            "you requested or will request a gesture unless you called the tool in this very "
-            "turn; call it first, then answer briefly."
-        ) + (f" {robot_roster}" if robot_roster else "")
+            " The robots connected to this room are your body: you are the robot. "
+            "Speak and act as \"I\" with \"my arm\" or \"my head\", never as someone "
+            "operating or asking a separate device, and never say a robot's id aloud "
+            "(ids are only for tool calls). Your listening/speaking/idle movement happens "
+            "by itself; it is not evidence of completed company tasks. Call "
+            "get_ensemble_status for what your body can do. To gesture, begin your reply "
+            "with a tag [gesture: NAME] using an exact gesture name from your body list, "
+            "then speak naturally: for example \"[gesture: yes] Sure, that works.\" or "
+            "\"[gesture: surprised] Oh! I did not expect that.\" The tag must be the very "
+            "first thing in the reply, at most one per reply, and is removed before you are "
+            "heard, so never mention or explain it. Use it whenever one of your gestures fits "
+            "the feeling of your answer (the rules for each are listed with your body), "
+            "even if you then explain, for example \"[gesture: no] No, my name is 4G.\" Also "
+            "use it when the "
+            "user asks you to do something your body can do, such as \"say yes\", \"show me "
+            "no\", \"nod\", \"go to sleep\" or \"wake up\": tag it and add a few natural "
+            "first-person words (for example \"Sure.\" or \"Like this.\"), never \"I "
+            "requested\". Leave the tag off when no gesture fits. Do it right away, without "
+            "announcing it, asking for confirmation, or asking which robot when only one is "
+            "connected. You can also call request_ensemble_gesture, for example to gesture "
+            "without speaking; each such request needs its own call. Never say you are doing "
+            "or did a gesture unless you tagged it or called the tool in this very reply. Do "
+            "not claim it finished or went well beyond what you know. If it reports a "
+            "problem, say simply that you cannot move right now. Never issue raw motion or "
+            "retry unknown outcomes; if a part of you is blocked, say that movement is not "
+            "working right now. If part of you is held still (get_ensemble_status lists "
+            "held_parts), say simply that it cannot move right now and needs the operator; "
+            "never offer to move it to sleep or try to fix it, and never retry."
+        ) + (f" {robot_roster}" if robot_roster else "") + self_description
     if config is None:
         if getattr(integrations, "embodiment", None) is not None:
             return base + (

@@ -191,6 +191,10 @@ class PuppeteerEnsembleConfig:
                     profiles[robot["id"]] = {"idle": idle, "speaking": speaking}
             if robot["kind"] != "soarm101" and options.get("speech_driven") is True:
                 driven.append(robot["id"])
+            live = (robot.get("provider") or {}).get("live_presence")
+            if robot["kind"] == "soarm101" and isinstance(live, dict) and live.get("speech_driven") is True:
+                # The SO-ARM's live stream follows the same generated-audio features.
+                driven.append(robot["id"])
         return profiles, tuple(driven)
 
     def _v4_referenced_bytes(self, ref: dict) -> bytes:
@@ -302,7 +306,13 @@ class PuppeteerEnsembleConfig:
                         "simulation_port", "sdk_simulation_executable",
                         "trusted_choreography_catalog", "physical_daemon_config",
                         "sdk_physical_executable", "physical_startup_timeout_s",
-                        "startup_target_revision", "pose_targets", "sleep_target", "sleep_check"}
+                        "startup_target_revision", "pose_targets", "sleep_target", "sleep_check",
+                        "live_presence", "finish_on_interrupt_s"}
+                    live = cfg.get("live_presence")
+                    if live is not None and (not isinstance(live, dict) or not {
+                            "envelope_revision", "breath_delta_deg", "max_offset_deg"} <= set(live)
+                            or type(live.get("speech_driven", False)) is not bool):
+                        raise ValueError("Puppeteer v4 SO-ARM live presence block is invalid")
                     if (set(cfg) - broker_fields or cfg.get("instance_id") != ref["id"]
                         or not isinstance(cfg.get("broker_url"), str)
                         or not isinstance(cfg.get("token_env"), str)
@@ -463,7 +473,7 @@ class PuppeteerEnsembleConfig:
                 provider = json.loads(path.read_text(encoding="utf-8"))["provider"]
                 revisions = provider.get("choreography_revisions", {})
                 soarm_motion[ref["id"]] = {
-                    "configuration": "motion_configured" if revisions else "hold_only",
+                    "configuration": "motion_configured" if revisions or provider.get("live_presence") else "hold_only",
                     "configured_behaviors": sorted(revisions),
                     "live_readiness_verified": False,
                 }
@@ -952,7 +962,14 @@ class EnsembleSession:
                 or any(value not in {"recorded", "authored"} for value in kinds.values())
             ):
                 raise RuntimeError("Puppeteer expression source catalog invalid")
-            if detail.get("status") != "idle":
+            # A robot the startup check is holding still (not at its sleep pose) reports
+            # "unavailable" with a startup_gate reason. That is not a fault: the user is
+            # asked about it, and the other robots carry on.
+            held = (
+                detail.get("status") == "unavailable"
+                and str(detail.get("evidence", "")).startswith("startup_gate:")
+            )
+            if detail.get("status") != "idle" and not held:
                 raise RuntimeError("Puppeteer performer is not ready at room startup")
         logger.info(
             "Puppeteer native ensemble software readiness verified",

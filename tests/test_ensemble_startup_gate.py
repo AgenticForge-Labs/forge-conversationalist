@@ -207,3 +207,22 @@ async def test_a_startup_that_never_finishes_gives_up_instead_of_silencing_the_v
         assert await room.wait_for_startup(timeout=0.6) is False
     finally:
         await room.close()
+
+
+def _status(**performer):
+    return {"schema": "forge.behavior.v1", "session_id": None, "state": "disconnected",
+            "performers": {name: {"expressions": ["yes"], "status": "idle",
+                                  "behavior_revision": "sha256:" + "a" * 64,
+                                  "presence_behaviors": ["idle", "listening"],
+                                  **(performer if name == "reachy" else {})}
+                           for name in ("reachy", "stackchan")}}
+
+
+def test_a_robot_held_by_the_startup_check_does_not_fail_the_room(tmp_path):
+    script, _ = child(tmp_path)
+    room = session(tmp_path, script)
+    room._verify_startup_state(_status(status="unavailable", evidence="startup_gate:not_at_sleep"))
+    for bad in ({"status": "unavailable", "evidence": "runtime_owner_or_resources_busy"},
+                {"status": "unavailable"}, {"status": "blocked", "evidence": "startup_gate:x"}):
+        with pytest.raises(RuntimeError, match="not ready"):
+            room._verify_startup_state(_status(**bad))

@@ -27,7 +27,9 @@ def test_4g_retains_ensemble_gesture_guard():
         integrations, caller_id="person", session_id="room", personality=FOUR_G,
     )
     assert "You are 4G" in instructions
-    assert "only when the user explicitly requests" in instructions
+    assert "begin your reply with a tag [gesture: NAME]" in instructions
+    assert "you are the robot" in instructions
+    assert "Never say you are doing or did a gesture unless you tagged it or called the tool" in instructions
 
 
 def test_4g_defaults_to_heygen_lucian_without_changing_stt_or_llm():
@@ -42,3 +44,19 @@ def test_4g_defaults_to_heygen_lucian_without_changing_stt_or_llm():
         "CONVERSATIONALIST_TTS_PROVIDER": "livekit",
     })
     assert explicit.tts_provider == "livekit"
+
+
+def test_self_description_is_background_that_is_never_volunteered():
+    from forge_conversationalist.agent import _self_description
+    from forge_conversationalist.config import CloudProfile
+
+    profile = CloudProfile(llm_model="openai/gpt-test", tts_model="vendor/voice-test")
+    text = _self_description(profile, ("soarm101", "reachy"))
+    assert "openai/gpt-test" in text and "Feetech STS3215" in text and "Reachy Mini" in text
+    assert "StackChan" not in text, "only connected bodies are described"
+    assert "Never mention, recite or hint at it unless the user asks" in text
+    assert "do not know rather than guessing" in text
+    integrations = type("Integrations", (), {"ensemble": object()})()
+    assert text in _room_instructions(
+        integrations, caller_id="p", session_id="r", self_description=text)
+    assert "Feetech" not in _room_instructions(integrations, caller_id="p", session_id="r")

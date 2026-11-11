@@ -137,60 +137,27 @@ def build_assistant_tools(
         async def get_ensemble_status() -> str:
             """Read Puppeteer's observed room/performer states; no physical success inferred.
 
-            Also reports any robot that is holding still because it is not at its
-            sleep position (``startup_questions``), with how far off it is.
+            A robot held still because it was not at its sleep position when the stack
+            started is reported as unavailable: that is fixed from the command line, not
+            by conversation.
             """
             status = await ensemble_session.status()
-            startup = await ensemble_session.startup()
-            performers = startup.get("performers") if startup.get("outcome") == "observed" else None
-            # Only a robot the startup gate is holding still has a question. A robot
-            # that is awake and in the conversation is naturally not at sleep.
-            gated = {
+            held = sorted(
                 name for name, entry in ((status.get("performers") or {}).items()
                                          if isinstance(status, dict) else ())
                 if isinstance(entry, dict) and str(entry.get("evidence", "")).startswith("startup_gate:")
-            }
-            held = {
-                name: {key: entry.get(key) for key in
-                       ("status", "message", "deltas_deg", "can_move_to_sleep")}
-                for name, entry in (performers or {}).items()
-                if name in gated and isinstance(entry, dict)
-                and entry.get("status") not in {"at_sleep", "confirmed_by_user"}
-            }
+            )
             if held and isinstance(status, dict):
-                status = {**status, "startup_questions": held, "spoken_guidance": (
-                    "A robot is holding still because it is not at its sleep position. Tell the "
-                    "user which robot and how far off it is, and ask whether to move it to sleep. "
-                    "Do nothing until they answer.")}
+                status = {**status, "held_parts": held, "spoken_guidance": (
+                    "Part of you cannot move right now. If asked, say so simply and that it needs "
+                    "attention from the operator; do not try to fix it or offer to.")}
             return json.dumps(status)
 
-        async def prepare_robot_for_conversation(performer_id: str, action: str) -> str:
-            """Answer a startup question for one robot, after the user said yes.
-
-            action is move_to_sleep (one sleep move, then a re-check) or confirm_at_sleep
-            (the user says a robot that cannot measure its own pose is already parked).
-            Never retried; report the outcome as it is.
-            """
-            result = await ensemble_session.prepare(performer_id, action)
-            outcome = result.get("outcome")
-            guidance = {
-                "at_sleep": f"{performer_id} reached its sleep position and joins the conversation shortly.",
-                "already_at_sleep": f"{performer_id} was already at its sleep position.",
-                "confirmed": f"Recorded that {performer_id} is parked; it joins the conversation shortly.",
-                "not_at_sleep_after_move": (
-                    f"{performer_id} moved but is still not at its sleep position. Say so and do not retry."),
-                "failed": f"The move for {performer_id} failed. Report that and do not retry.",
-            }.get(outcome, (
-                f"{performer_id} could not be prepared ({result.get('reason') or outcome}). "
-                "Report that and do not retry automatically."))
-            return json.dumps({**result, "spoken_guidance": guidance})
-
         async def request_ensemble_gesture(name: str, performer_id: str) -> str:
-            """Request one finite catalogued gesture from a selected performer.
+            """Make one of your own approved gestures with the selected part of your body.
 
-            First inspect get_ensemble_status for that performer's approved
-            expressions. A person must explicitly request the gesture.
-            Never infer motion completion or automatically retry.
+            Use the exact gesture name and performer id from get_ensemble_status. Do it as
+            soon as the user asks. Never retry unknown outcomes.
             """
             result = await ensemble_session.express(name, performer_id)
             outcome = result.get("outcome")
@@ -199,30 +166,32 @@ def build_assistant_tools(
                     **result,
                     "completion": "unconfirmed",
                     "spoken_guidance": (
-                        f"{name} was requested for {performer_id}. It is not "
-                        "confirmed complete; say it was requested, never that "
-                        "it happened."
+                        "It has started. Answer in first person in a few natural words about "
+                        "what you are doing (for example \"Sure.\" or \"Like this.\"). Do not "
+                        "mention requests, tools or robot ids, and do not say it finished."
                     ),
                 }
             elif outcome == "unsupported":
-                # Say plainly that the gesture does not exist here; do not
-                # imply a request was made.
                 result = {
                     **result,
                     "spoken_guidance": (
-                        f"{performer_id} does not offer {name}. Tell the user "
-                        "that gesture is unavailable there and offer one from "
-                        "get_ensemble_status instead."
+                        f"You have no gesture called {name} there. Say so in first person and "
+                        "offer one or two you do have, by plain name, from get_ensemble_status."
                     ),
                 }
             elif outcome == "denied":
-                result = {
-                    **result,
-                    "spoken_guidance": (
-                        f"{performer_id} is unavailable right now ({result.get('reason')}). "
-                        "Report that, and do not retry automatically."
-                    ),
-                }
+                if result.get("reason") == "performer_resting_needs_wake":
+                    guidance = (
+                        "You are lying down. Call request_ensemble_gesture with name neutral "
+                        "for the same performer to wake up, then repeat the gesture the user "
+                        "asked for, and say briefly in first person that you are waking up."
+                    )
+                else:
+                    guidance = (
+                        "You cannot move that way right now. Say so simply in first person; "
+                        "do not retry automatically and do not give technical reasons."
+                    )
+                result = {**result, "spoken_guidance": guidance}
             return json.dumps(result)
 
         tools.extend([
@@ -231,21 +200,13 @@ def build_assistant_tools(
                 description="Read Puppeteer room status and individual configured performer evidence.",
             ),
             function_tool_factory(
-                prepare_robot_for_conversation, name="prepare_robot_for_conversation",
-                description=(
-                    "Only after the user said yes to your question about a robot that is not at its "
-                    "sleep position (see startup_questions in get_ensemble_status): move that one robot to "
-                    "sleep (action move_to_sleep) or record that a robot which cannot measure itself is "
-                    "already parked (action confirm_at_sleep). Never without that yes; never retry."
-                ),
-            ),
-            function_tool_factory(
                 request_ensemble_gesture, name="request_ensemble_gesture",
                 description=(
-                    "On an explicit user request, inspect get_ensemble_status and request an "
-                    "exact approved named gesture for one selected performer_id. "
-                    "Do not issue a gesture to every robot by default. Admission is not physical completion; "
-                    "never say it happened unless its completion has been independently confirmed."
+                    "Make one of your own approved gestures (you are the robot) the moment the "
+                    "user asks, such as nodding yes, shaking no, going to sleep or waking up. "
+                    "Use the exact gesture name and performer_id from get_ensemble_status. "
+                    "Do not make a gesture on every part of your body by default, and do not "
+                    "claim it finished; it has only started."
                 ),
             ),
         ])
