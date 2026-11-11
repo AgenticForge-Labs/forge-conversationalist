@@ -26,6 +26,11 @@ _MAX_TAG = 48
 SPEAK_AFTER_FRACTION = 0.5
 SPEAK_AFTER_MAX_S = 3.0
 DEFAULT_GESTURE_S = 2.0
+#: A tag can only ever start an expressive gesture. Lying down is never inferred from a
+#: feeling: it needs an explicit request (the tool). Waking is accepted from a tag only
+#: while the robot is resting, because nothing else is possible then.
+NEVER_BY_TAG = frozenset({"sleep2"})
+WAKE_BY_TAG = "neutral"
 
 
 class GestureTagFilter:
@@ -101,6 +106,9 @@ async def start_gesture(ensemble: object, name: str) -> float:
         if not isinstance(entry, dict) or entry.get("status") in {"blocked", "unavailable"}:
             continue
         if name not in (entry.get("expressions") or ()):
+            continue
+        if name in NEVER_BY_TAG or (name == WAKE_BY_TAG and entry.get("resting") is not True):
+            logger.info("gesture tag %s ignored: not allowed from a tag", name)
             continue
         try:
             result = await ensemble.express(name, performer_id)

@@ -668,37 +668,54 @@ def _self_description(profile: object, performer_ids: object = ()) -> str:
     )
 
 
-_GESTURE_GLOSS = {
-    "yes": "nod yes", "no": "shake my head no", "curious": "look curious",
-    "acknowledge": "acknowledge", "confused": "look confused", "surprised": "look surprised",
-    "sleep2": "lie down to sleep", "neutral": "wake up and stand ready",
+#: gesture name -> (what it looks like, when to use it). Only gestures a robot actually
+#: offers are described to the model; an unknown name is listed bare.
+_GESTURES = {
+    "yes": ("nod yes", "your answer is yes, you agree, accept or confirm something"),
+    "no": ("shake my head no", "your answer is no, you disagree, refuse, or cannot do something"),
+    "curious": ("look curious", "you are intrigued, asked something playful, or making a light joke"),
+    "surprised": ("startle with surprise", "something is unexpected, or the news is exciting or shocking"),
+    "confused": ("look confused", "you do not understand, or the question is puzzling or unclear"),
+    "acknowledge": ("acknowledge", "you are simply noting what was said"),
+    "sleep2": ("lie down to sleep", "the user asks you to go to sleep"),
+    "neutral": ("wake up and stand ready", "the user asks you to wake up"),
 }
 
 
 def _robot_roster(status: object) -> str:
-    """One sentence naming each connected part of the robot body and its gestures."""
+    """The body and its gestures, with a when-to-use rule for each, built from what is offered."""
     performers = status.get("performers") if isinstance(status, dict) else None
     if not isinstance(performers, dict):
         return ""
     parts = []
     resting = []
+    offered: list[str] = []
     for name, entry in sorted(performers.items()):
         if not isinstance(entry, dict) or entry.get("status") in {"unavailable", "blocked"}:
             continue
         gestures = [g for g in entry.get("expressions", ()) if isinstance(g, str)]
-        described = [f"{g} ({_GESTURE_GLOSS[g]})" if g in _GESTURE_GLOSS else g for g in gestures]
+        described = [f"{g} ({_GESTURES[g][0]})" if g in _GESTURES else g for g in gestures]
         parts.append(f"{name}: {', '.join(described) if described else 'no gestures'}")
+        offered.extend(g for g in gestures if g not in offered)
         if "sleep2" in gestures and "neutral" in gestures:
             resting.append(name)
     if not parts:
         return ""
     text = ("Your body and its approved gestures, by tool id (never say the ids aloud): "
             + "; ".join(parts) + ".")
+    rules = [f"[gesture: {g}] when {_GESTURES[g][1]}" for g in offered
+             if g in _GESTURES and g not in {"sleep2", "neutral"}]
+    if rules:
+        text += (" When to start a reply with a gesture tag: " + "; ".join(rules) + ". Pick the one "
+                 "that fits the feeling of your whole answer, and use no tag when none fits, for "
+                 "example a plain fact, a number or a neutral explanation.")
     if resting:
-        text += (f" For {', '.join(resting)}, sleep2 lays it down to rest and neutral wakes it "
-                 "back up, after which it resumes breathing. If you are resting and the user "
-                 "asks for something else, begin your reply with [gesture: neutral] and call "
-                 "request_ensemble_gesture for what they asked; it follows the wake-up.")
+        text += (f" For {', '.join(resting)}: only when the user asks you to lie down or go to "
+                 "sleep, call request_ensemble_gesture with sleep2 (never use a tag for it, and "
+                 "never lie down on your own). While you are resting nothing else works: begin "
+                 "your reply with [gesture: neutral] to wake up when the user wants you up, "
+                 "after which you resume breathing; if they asked for something else, also call "
+                 "request_ensemble_gesture for it and it follows the wake-up.")
     return text
 
 
@@ -742,11 +759,10 @@ def _room_instructions(
             "then speak naturally: for example \"[gesture: yes] Sure, that works.\" or "
             "\"[gesture: surprised] Oh! I did not expect that.\" The tag must be the very "
             "first thing in the reply, at most one per reply, and is removed before you are "
-            "heard, so never mention or explain it. Always use it when you answer a yes-or-no "
-            "question: [gesture: yes] when your answer is yes, [gesture: no] when it is no, "
-            "even if you then explain (for example \"[gesture: no] No, my name is 4G.\"). "
-            "Also use it when your answer carries a clear feeling (surprise, puzzlement, "
-            "curiosity) or when the "
+            "heard, so never mention or explain it. Use it whenever one of your gestures fits "
+            "the feeling of your answer (the rules for each are listed with your body), "
+            "even if you then explain, for example \"[gesture: no] No, my name is 4G.\" Also "
+            "use it when the "
             "user asks you to do something your body can do, such as \"say yes\", \"show me "
             "no\", \"nod\", \"go to sleep\" or \"wake up\": tag it and add a few natural "
             "first-person words (for example \"Sure.\" or \"Like this.\"), never \"I "

@@ -154,3 +154,26 @@ async def test_the_agent_subclass_filters_the_models_stream():
     async for chunk in agent.llm_node(None, [], None):
         spoken += chunk.delta.content
     assert spoken == "Like this." and ensemble.calls == [("no", "arm")]
+
+
+def test_every_offered_gesture_gets_a_rule_and_unknown_ones_are_listed_bare():
+    from forge_conversationalist.agent import _robot_roster
+
+    roster = _robot_roster({"performers": {"arm": {"status": "idle", "expressions": [
+        "yes", "no", "curious", "surprised", "confused", "wiggle"]}}})
+    for name in ("yes", "no", "curious", "surprised", "confused"):
+        assert f"[gesture: {name}] when" in roster
+    assert "wiggle" in roster and "[gesture: wiggle]" not in roster
+
+
+async def test_sleep_is_never_started_by_a_tag_and_wake_only_while_resting():
+    awake = {"arm": {**ARM, "expressions": ["yes", "sleep2", "neutral"]}}
+    ensemble = FakeEnsemble(awake)
+    assert await start_gesture(ensemble, "sleep2") == 0.0
+    assert await start_gesture(ensemble, "neutral") == 0.0
+    assert ensemble.calls == []
+    resting = {"arm": {**awake["arm"], "resting": True}}
+    ensemble = FakeEnsemble(resting)
+    assert await start_gesture(ensemble, "sleep2") == 0.0 and ensemble.calls == []
+    assert await start_gesture(ensemble, "neutral") > 0.0
+    assert ensemble.calls == [("neutral", "arm")]

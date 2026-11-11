@@ -55,8 +55,13 @@ def test_native_ensemble_disabled_by_default_and_no_new_agent_identity(tmp_path)
         "soarm101": {"status": "idle", "expressions": ["yes", "no", "curious"]},
         "reachy": {"status": "unavailable", "expressions": ["yes"]},
     }})
-    assert roster == ("Your body and its approved gestures, by tool id (never say the ids aloud): "
-                      "soarm101: yes (nod yes), no (shake my head no), curious (look curious).")
+    assert roster.startswith("Your body and its approved gestures, by tool id (never say the ids aloud): "
+                             "soarm101: yes (nod yes), no (shake my head no), curious (look curious).")
+    # Each offered gesture comes with its own when-to-use rule; nothing else is described.
+    assert "[gesture: yes] when your answer is yes" in roster
+    assert "[gesture: no] when your answer is no" in roster
+    assert "[gesture: curious] when you are intrigued" in roster
+    assert "surprised" not in roster and "sleep2" not in roster
     assert "own call" in _room_instructions(configured, caller_id="operator", session_id="room")
     assert roster in _room_instructions(
         configured, caller_id="operator", session_id="room", robot_roster=roster)
@@ -564,7 +569,7 @@ def test_roster_explains_how_a_resting_arm_is_woken():
     roster = _robot_roster({"performers": {
         "soarm101": {"status": "idle", "expressions": ["yes", "sleep2", "neutral"]},
         "reachy": {"status": "idle", "expressions": ["yes"]}}})
-    assert "sleep2 lays it down to rest" in roster and "neutral wakes it" in roster
+    assert "call request_ensemble_gesture with sleep2" in roster and "begin your reply with [gesture: neutral]" in roster
     assert "reachy" not in roster.split("For ")[1].split(",")[0]
     plain = _robot_roster({"performers": {"soarm101": {"status": "idle", "expressions": ["yes"]}}})
     assert "sleep2" not in plain
