@@ -27,9 +27,9 @@ def test_4g_retains_ensemble_gesture_guard():
         integrations, caller_id="person", session_id="room", personality=FOUR_G,
     )
     assert "You are 4G" in instructions
-    assert "When the user asks you to do something your body can do" in instructions
+    assert "begin your reply with a tag [gesture: NAME]" in instructions
     assert "you are the robot" in instructions
-    assert "never say you are doing or did a gesture unless you called the tool" in instructions
+    assert "Never say you are doing or did a gesture unless you tagged it or called the tool" in instructions
 
 
 def test_4g_defaults_to_heygen_lucian_without_changing_stt_or_llm():

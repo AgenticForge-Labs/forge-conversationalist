@@ -28,6 +28,7 @@ from .config import (
 )
 from .embodiment import EmbodimentSession
 from .ensemble import EnsembleSession
+from .gesture_tags import agent_class_with_gesture_tags
 from .identified_playback import SEGMENT_ID_KEY, IdentifiedSpeechBridge
 from .integrations import Integrations, load_integrations
 from .mail_stream_notifications import AmbientMailNotifications, load_mail_stream_config
@@ -474,6 +475,10 @@ async def entrypoint(ctx: object) -> None:
         )
         if (envelope_opt_in or native_bridge is not None) and ensemble is not None else Agent
     )
+    if ensemble is not None and authorized_identity and not original_speech:
+        # One model call per reply: a leading [gesture: NAME] tag starts the gesture and the
+        # voice follows partway through it (see gesture_tags).
+        agent_class = agent_class_with_gesture_tags(agent_class, ensemble)
     initial_integrations = (
         replace(agent_integrations, ensemble=None) if original_speech else agent_integrations
     )
@@ -692,7 +697,8 @@ def _robot_roster(status: object) -> str:
     if resting:
         text += (f" For {', '.join(resting)}, sleep2 lays it down to rest and neutral wakes it "
                  "back up, after which it resumes breathing. If you are resting and the user "
-                 "asks for something else, call neutral first, then that gesture.")
+                 "asks for something else, begin your reply with [gesture: neutral] and call "
+                 "request_ensemble_gesture for what they asked; it follows the wake-up.")
     return text
 
 
@@ -731,15 +737,22 @@ def _room_instructions(
             "operating or asking a separate device, and never say a robot's id aloud "
             "(ids are only for tool calls). Your listening/speaking/idle movement happens "
             "by itself; it is not evidence of completed company tasks. Call "
-            "get_ensemble_status for what your body can do. When the user asks you to do "
-            "something your body can do, such as \"say yes\", \"show me no\", \"nod\", "
-            "\"go to sleep\" or \"wake up\", just do it: call request_ensemble_gesture "
-            "right away, without announcing it, asking for confirmation, or asking which "
-            "robot when only one is connected, then answer in a few natural first-person "
-            "words (for example \"Sure.\" or \"Like this.\"), never \"I requested\". Every "
-            "new request needs its own call, even right after another; never say you are "
-            "doing or did a gesture unless you called the tool in this very turn. Do not "
-            "claim it finished or went well beyond what the tool returned. If it reports a "
+            "get_ensemble_status for what your body can do. To gesture, begin your reply "
+            "with a tag [gesture: NAME] using an exact gesture name from your body list, "
+            "then speak naturally: for example \"[gesture: yes] Sure, that works.\" or "
+            "\"[gesture: surprised] Oh! I did not expect that.\" The tag must be the very "
+            "first thing in the reply, at most one per reply, and is removed before you are "
+            "heard, so never mention or explain it. Use it when your answer carries a clear "
+            "feeling (agreement, disagreement, surprise, puzzlement, curiosity) or when the "
+            "user asks you to do something your body can do, such as \"say yes\", \"show me "
+            "no\", \"nod\", \"go to sleep\" or \"wake up\": tag it and add a few natural "
+            "first-person words (for example \"Sure.\" or \"Like this.\"), never \"I "
+            "requested\". Leave the tag off when no gesture fits. Do it right away, without "
+            "announcing it, asking for confirmation, or asking which robot when only one is "
+            "connected. You can also call request_ensemble_gesture, for example to gesture "
+            "without speaking; each such request needs its own call. Never say you are doing "
+            "or did a gesture unless you tagged it or called the tool in this very reply. Do "
+            "not claim it finished or went well beyond what you know. If it reports a "
             "problem, say simply that you cannot move right now. Never issue raw motion or "
             "retry unknown outcomes; if a part of you is blocked, say that movement is not "
             "working right now. Early in the conversation call get_ensemble_status once. If "
