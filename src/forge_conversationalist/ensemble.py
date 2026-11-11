@@ -962,7 +962,14 @@ class EnsembleSession:
                 or any(value not in {"recorded", "authored"} for value in kinds.values())
             ):
                 raise RuntimeError("Puppeteer expression source catalog invalid")
-            if detail.get("status") != "idle":
+            # A robot the startup check is holding still (not at its sleep pose) reports
+            # "unavailable" with a startup_gate reason. That is not a fault: the user is
+            # asked about it, and the other robots carry on.
+            held = (
+                detail.get("status") == "unavailable"
+                and str(detail.get("evidence", "")).startswith("startup_gate:")
+            )
+            if detail.get("status") != "idle" and not held:
                 raise RuntimeError("Puppeteer performer is not ready at room startup")
         logger.info(
             "Puppeteer native ensemble software readiness verified",
