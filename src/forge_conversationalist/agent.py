@@ -755,14 +755,9 @@ def _room_instructions(
             "not claim it finished or went well beyond what you know. If it reports a "
             "problem, say simply that you cannot move right now. Never issue raw motion or "
             "retry unknown outcomes; if a part of you is blocked, say that movement is not "
-            "working right now. Early in the conversation call get_ensemble_status once. If "
-            "it lists startup_questions, a part of you is holding still because it is not at "
-            "its rest position: say in first person which part and how far off it is (for "
-            "example \"my arm is about 20 degrees from its rest position\") and ask whether "
-            "to move it to sleep. Only after the user says yes, call "
-            "prepare_robot_for_conversation with action move_to_sleep (or confirm_at_sleep "
-            "if the user says a part that cannot measure itself is already parked). Never "
-            "move without that yes, and never retry a failed move."
+            "working right now. If part of you is held still (get_ensemble_status lists "
+            "held_parts), say simply that it cannot move right now and needs the operator; "
+            "never offer to move it to sleep or try to fix it, and never retry."
         ) + (f" {robot_roster}" if robot_roster else "") + self_description
     if config is None:
         if getattr(integrations, "embodiment", None) is not None:

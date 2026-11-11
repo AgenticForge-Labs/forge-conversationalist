@@ -113,3 +113,36 @@ def test_ctrl_c_stops_both_children(monkeypatch):
     monkeypatch.setattr(launcher.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
     assert launcher.main() == 0
     assert killed == [(200, signal.SIGTERM), (200, signal.SIGTERM)]
+
+
+def test_sleep_preflight_runs_the_puppeteer_prompt_in_the_terminal(monkeypatch, capsys):
+    calls = []
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr(launcher.subprocess, "run", lambda args, **kw: calls.append((args, kw)) or Done())
+    env = {"PUPPETEER_ENSEMBLE_CONFIG": "/cfg/room.json", "PUPPETEER_ENSEMBLE_COMMAND": "/rt/ensemble"}
+    assert launcher.sleep_preflight(env, assume_yes=False) == 0
+    assert launcher.sleep_preflight(env, assume_yes=True) == 0
+    assert calls[0][0] == ["/rt/ensemble", "--config", "/cfg/room.json", "--preflight"]
+    assert calls[1][0][-2:] == ["--preflight", "--yes"]
+    assert "stdin" not in calls[0][1] and "stdout" not in calls[0][1], "uses the real terminal"
+    assert launcher.sleep_preflight({}, assume_yes=False) is None
+
+
+def test_sleep_preflight_reports_a_robot_left_off_sleep_and_a_missing_command(monkeypatch, capsys):
+    class Declined:
+        returncode = 1
+
+    monkeypatch.setattr(launcher.subprocess, "run", lambda *a, **k: Declined())
+    env = {"PUPPETEER_ENSEMBLE_CONFIG": "/cfg/room.json"}
+    assert launcher.sleep_preflight(env, assume_yes=False) == 1
+    assert "left off its sleep position" in capsys.readouterr().err
+
+    def missing(*_a, **_k):
+        raise FileNotFoundError("forge-puppeteer-ensemble")
+
+    monkeypatch.setattr(launcher.subprocess, "run", missing)
+    assert launcher.sleep_preflight(env, assume_yes=False) == 1
+    assert "could not run" in capsys.readouterr().err

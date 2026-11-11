@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import subprocess
@@ -81,7 +82,34 @@ def _stop(processes: list[subprocess.Popen[bytes]]) -> None:
             pass
 
 
-def main() -> int:
+def sleep_preflight(effective: dict[str, str], *, assume_yes: bool) -> int | None:
+    """Run Puppeteer's command-line sleep check before anything starts.
+
+    Plain code, no model: it warns about a robot that is off its sleep position and asks
+    y/N right here in the terminal. Returns None when no robot ensemble is configured.
+    """
+    config = str(effective.get("PUPPETEER_ENSEMBLE_CONFIG", "")).strip()
+    if not config:
+        return None
+    command = str(effective.get("PUPPETEER_ENSEMBLE_COMMAND", "")).strip() or "forge-puppeteer-ensemble"
+    args = [command, "--config", config, "--preflight", *(["--yes"] if assume_yes else [])]
+    print("Checking that the robots are at their sleep positions...", flush=True)
+    try:
+        code = subprocess.run(args, env={**os.environ}, check=False).returncode
+    except OSError as exc:
+        print(f"Sleep check could not run: {exc}", file=sys.stderr)
+        return 1
+    if code != 0:
+        print("Sleep check: a robot was left off its sleep position. It stays still in "
+              "conversations until it is laid down (run again and answer y).", file=sys.stderr)
+    return code
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Start the local voice worker and web UI.")
+    parser.add_argument("--yes-sleep", action="store_true",
+                        help="answer yes to the robot sleep question instead of asking")
+    options = parser.parse_args([] if argv is None else argv)
     # Import only after the script's project environment is available.
     from forge_conversationalist.startup_preflight import inspect_environment
 
@@ -96,6 +124,7 @@ def main() -> int:
     worker_values = dotenv_values(env_file)
     effective = {**{k: str(v) for k, v in worker_values.items() if v is not None}, **os.environ}
     puppeteer_configured = bool(str(effective.get("PUPPETEER_ENSEMBLE_CONFIG", "")).strip())
+    sleep_preflight(effective, assume_yes=options.yes_sleep)
     print(f"Conversationalist: {WEB_URL}", flush=True)
     print(f"Puppeteer ensemble configured: {'yes' if puppeteer_configured else 'no'}", flush=True)
     print("LiveKit is reachable. Press Ctrl-C to stop worker and web.", flush=True)
@@ -127,4 +156,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

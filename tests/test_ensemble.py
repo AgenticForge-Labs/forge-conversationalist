@@ -164,35 +164,22 @@ def test_ensemble_agent_tools_only_status_and_exact_explicit_gestures(tmp_path):
     tools = build_assistant_tools(
         cfg, ensemble_session=stub, function_tool_factory=factory,
     )
-    assert len(tools) == 3
-    assert set(registered) == {
-        "get_ensemble_status", "request_ensemble_gesture", "prepare_robot_for_conversation",
-    }
+    assert set(registered) == {"get_ensemble_status", "request_ensemble_gesture"}
+    assert len(tools) == 2
 
     async def run():
+        # A robot the startup check holds still is reported as unable to move; the model
+        # is told not to ask about it or offer to fix it (that is a command-line question).
         held = json.loads(await registered["get_ensemble_status"]())
-        assert held["state"] == "speaking"
-        # A robot that is not at sleep is raised as a question for the user, with how far off.
-        assert set(held["startup_questions"]) == {"reachy"}
-        assert held["startup_questions"]["reachy"]["deltas_deg"] == {"shoulder_lift": 12.0}
-        assert "ask whether to move it to sleep" in held["spoken_guidance"]
-        answered = json.loads(await registered["prepare_robot_for_conversation"]("reachy", "move_to_sleep"))
-        assert answered["outcome"] == "at_sleep" and "reached its sleep position" in answered["spoken_guidance"]
-        stub.ready = True
-        assert "startup_questions" not in json.loads(await registered["get_ensemble_status"]())
-        # An awake robot in the conversation is naturally not at sleep: that is no question.
-        async def awake_startup():
-            return {"outcome": "observed", "ready": False, "performers": {
-                "reachy": {"status": "not_at_sleep", "can_move_to_sleep": True, "deltas_deg": {"elbow_flex": -90.0}}}}
-        stub.startup = awake_startup
-        assert "startup_questions" not in json.loads(await registered["get_ensemble_status"]())
+        assert held["state"] == "speaking" and held["held_parts"] == ["reachy"]
+        assert "do not try to fix it" in held["spoken_guidance"]
+        assert "startup_questions" not in held
         result = json.loads(await registered["request_ensemble_gesture"]("yes", "reachy"))
         assert result["outcome"] == "accepted" and result["expression"] == "yes"
         assert result["completion"] == "unconfirmed"
         assert "do not say it finished" in result["spoken_guidance"]
 
     asyncio.run(run())
-    assert stub.prepared == [("reachy", "move_to_sleep")]
     assert stub.expressions == [("yes", "reachy")]
     assert build_assistant_tools(cfg, function_tool_factory=factory) == []
 
