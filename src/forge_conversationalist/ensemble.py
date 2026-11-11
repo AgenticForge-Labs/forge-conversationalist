@@ -307,7 +307,7 @@ class PuppeteerEnsembleConfig:
                         "trusted_choreography_catalog", "physical_daemon_config",
                         "sdk_physical_executable", "physical_startup_timeout_s",
                         "startup_target_revision", "pose_targets", "sleep_target", "sleep_check",
-                        "live_presence"}
+                        "live_presence", "finish_on_interrupt_s"}
                     live = cfg.get("live_presence")
                     if live is not None and (not isinstance(live, dict) or not {
                             "envelope_revision", "breath_delta_deg", "max_offset_deg"} <= set(live)
